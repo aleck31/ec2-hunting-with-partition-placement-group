@@ -62,7 +62,7 @@ async fn main() {
         let mut sum_latency = 0u128;
         let mut count = 0u64;
         let mut warm_up_count = 0u64;
-        let mut send_times: HashMap<String, Instant> = HashMap::new();
+        let mut send_times_map: HashMap<String, Instant> = HashMap::new();
         let mut latencies: Vec<u128> = Vec::new();
         loop {
             tokio::select! {
@@ -71,7 +71,7 @@ async fn main() {
                         Ok(Message::Text(data)) => {
                             if let Ok(json) = serde_json::from_str::<Value>(&data) {
                                 if let Some(id) = json["id"].as_str() {
-                                    if let Some(send_time) = send_times.remove(id) {
+                                    if let Some(send_time) = send_times_map.remove(id) {
                                         if warm_up_count > 5 {
                                             let latency_us = send_time.elapsed().as_micros();
 
@@ -147,7 +147,7 @@ async fn main() {
                     let send_start = Instant::now();
                     ws_stream.send(to_send).await.expect("Failed to send message");
                     println!("[{},{},{}] send -> acknowledged by kernel/NIC latency {}µs", timestamp_us(), peer_ip, count, send_start.elapsed().as_micros());
-                    send_times.insert(id, req_start);
+                    send_times_map.insert(id, req_start);
                 }
                 else => break,
             }
@@ -159,15 +159,13 @@ async fn main() {
     loop {
         interval.tick().await;
 
-        let id = timestamp_us().to_string();
+        let id = app_start.elapsed().as_micros().to_string();
 
         let req = format!(r#"{{"id": "{}","method": "depth","params": {{"symbol": "BTCUSDT","limit": 5}}}}"#, id);
 
-        let start = Instant::now();
-
         println!("[{}] request message: {}", timestamp_us(), &req);
 
-        send_tx.send((id.clone(), start, Message::Text(req.into()))).await.expect("Failed to queue send");
+        send_tx.send((id.clone(), Instant::now(), Message::Text(req.into()))).await.expect("Failed to queue send");
     }
 }
 
