@@ -57,16 +57,13 @@ async fn main() {
 
     tokio::spawn(async move {
         let mut send_rx = send_rx;
-
-        let mut send_times: HashMap<String, Instant> = HashMap::new();
-
-        let mut latencies: Vec<u128> = Vec::new();
-
         let mut min_latency = u128::MAX;
         let mut max_latency = 0u128;
         let mut sum_latency = 0u128;
         let mut count = 0u64;
         let mut warm_up_count = 0u64;
+        let mut send_times: HashMap<String, Instant> = HashMap::new();
+        let mut latencies: Vec<u128> = Vec::new();
         loop {
             tokio::select! {
                 Some(msg) = ws_stream.next() => {
@@ -76,9 +73,7 @@ async fn main() {
                                 if let Some(id) = json["id"].as_str() {
                                     if let Some(send_time) = send_times.remove(id) {
                                         if warm_up_count > 5 {
-                                            let received = Instant::now();
-                                            let latency = received - send_time;
-                                            let latency_us = latency.as_micros();
+                                            let latency_us = send_time.elapsed().as_micros();
 
                                             // Update min latency
                                             if latency_us < min_latency {
@@ -98,11 +93,11 @@ async fn main() {
                                             } else {
                                                 0.0
                                             };
+                                            // TODO: send result to observability platform for timeseries vistualization, work around to calculate locally
                                             latencies.push(latency_us);
                                             println!("[{},{},{}] response latency: {}µs, min: {}µs, max: {}µs, average: {:.2}µs, message: {}",
                                                 timestamp_us(), peer_ip, count, latency_us, min_latency, max_latency, avg, json);
 
-                                            // TODO: send result to observability platform for timeseries vistualization, work around to calculate locally
                                             if count == 600 {
                                                 latencies.sort();
                                                 let n = latencies.len();
@@ -151,8 +146,7 @@ async fn main() {
                 Some((id, req_start, to_send)) = send_rx.recv() => {
                     let send_start = Instant::now();
                     ws_stream.send(to_send).await.expect("Failed to send message");
-                    let sent = Instant::now();
-                    println!("[{},{},{}] send -> acknowledged by kernel/NIC latency {}µs", timestamp_us(), peer_ip, count,(sent - send_start).as_micros());
+                    println!("[{},{},{}] send -> acknowledged by kernel/NIC latency {}µs", timestamp_us(), peer_ip, count, send_start.elapsed().as_micros());
                     send_times.insert(id, req_start);
                 }
                 else => break,
