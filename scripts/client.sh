@@ -29,5 +29,6 @@ mkdir -p /share \
 sudo yum install -y https://mirror.stream.centos.org/9-stream/BaseOS/x86_64/os/Packages/tuna-0.19-4.el9.noarch.rpm
 sudo tuna isolate --cpus=0-1
 
-TARGET_IP=54.168.162.131
-sudo nohup taskset -c 0-1 /share/bench/sources/binance_ws/target/release/binance_ws $TARGET_IP > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 &
+### If you want to run it once the init ready
+#TARGET_IP=54.168.162.131
+#sudo nohup taskset -c 0-1 /share/bench/sources/binance_ws/target/release/binance_ws $TARGET_IP > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 &
