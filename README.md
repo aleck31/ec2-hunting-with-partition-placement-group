@@ -1,10 +1,10 @@
-# Binance WebSocket Latency Testing
+# Binance WebSocket EC2 Hunting
 
-Terraform infrastructure for testing Binance Futures WebSocket API latency using AWS EC2 instances with partition placement groups.
+EC2 Hunting for Binance Futures WebSocket API latency using AWS EC2 instances with partition placement groups.
 
 ## Overview
 
-This project deploys EC2 instances to measure WebSocket latency to Binance Futures API endpoints. The Rust client connects to specific Binance IPs and measures round-trip latency for market data requests.
+This project deploys EC2 instances to measure WebSocket latency to Binance Futures API endpoints. The Rust client connects to specific Binance IPs and measures round-trip latency for market data requests using nanosecond-accurate monotonic timestamping.
 
 ### Architecture
 
