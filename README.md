@@ -4,7 +4,15 @@ EC2 Hunting for Binance Futures WebSocket API latency using AWS EC2 instances wi
 
 ## Overview
 
-This project deploys EC2 instances to measure WebSocket latency to Binance Futures API endpoints. The Rust client connects to specific Binance IPs and measures round-trip latency for market data requests using nanosecond-accurate monotonic timestamping.
+This project deploys 7 x `c6in.2xlarge` to measure WebSocket latency to Binance Futures API endpoints. The Rust client connects to specific Binance IPs and measures round-trip latency for market data requests using nanosecond-accurate monotonic timestamping.
+
+### The Hunting Path
+![](assets/hunting-path.png)
+
+### Result
+![](assets/hunting-result-1.png)
+![](assets/hunting-result-2.png)
+![](assets/hunting-result-3.png)
 
 ### Architecture
 
