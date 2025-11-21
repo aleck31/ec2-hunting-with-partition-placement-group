@@ -143,11 +143,11 @@ async fn main() {
                         }
                     }
                 }
-                Some((id, req_start, to_send)) = send_rx.recv() => {
+                Some((id, _req_start, to_send)) = send_rx.recv() => {
                     let send_start = Instant::now();
                     ws_stream.send(to_send).await.expect("Failed to send message");
                     println!("[{},{},{}] send -> acknowledged by kernel/NIC latency {}µs", timestamp_us(), peer_ip, count, send_start.elapsed().as_micros());
-                    send_times_map.insert(id, req_start);
+                    send_times_map.insert(id, send_start);
                 }
                 else => break,
             }

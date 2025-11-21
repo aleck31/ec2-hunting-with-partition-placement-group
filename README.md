@@ -1,6 +1,16 @@
+# Local test Rust program
+```
+cd sources/binance_ws
+
+dig +short ws-fapi.binance.com
+
+cargo run {target_ip_address}
+```
+
 # Run
 
 ```shell
+sh pack_source.sh
 terraform apply --auto-approve
 ```
 
