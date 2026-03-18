@@ -1,0 +1,8 @@
+# Required - update these values for your environment
+aws_vpc_id               = "vpc-xxxxxxxxxxxxxxxxx"
+aws_availability_zone_id = "apne1-az4"
+s3_bucket                = "your-s3-bucket-name"
+
+# Optional - uncomment to override defaults
+# aws_region             = "ap-northeast-1"
+# subnet_cidr_block      = "10.0.10.0/24"

@@ -2,14 +2,14 @@
 VERSION='v1'
 TIMESTAMP=$(date +"%s")
 
-# display hyper threading
+# Disable hyper-threading
 # https://aws.amazon.com/blogs/compute/disabling-intel-hyper-threading-technology-on-amazon-linux/
 for cpunum in $(cat /sys/devices/system/cpu/cpu*/topology/thread_siblings_list | cut -s -d, -f2- | tr ',' '\n' | sort -un)
 do
 	sudo echo 0 > /sys/devices/system/cpu/cpu$cpunum/online
 done
 
-# Ensure Turbo boost is on
+# Enable Turbo boost (0 = turbo enabled)
 # https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/processor_state_control.html
 sudo sh -c "echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo"
 sudo cpupower frequency-set --governor performance
@@ -19,7 +19,7 @@ mkdir -p /share \
 && env RUSTUP_HOME=/share/.rustup CARGO_HOME=/share/.cargo sh /share/rust-init.sh -y \
 && ln -s /share/.cargo/bin/* /usr/bin/ \
 && sudo /share/.cargo/bin/rustup default stable \
-&& aws s3 cp s3://garyyhlo-ap-northeast-1/source.tar.gz /share/source.tar.gz \
+&& aws s3 cp s3://${s3_bucket}/source.tar.gz /share/source.tar.gz \
 && mkdir -p /share/bench \
 && tar -zxf /share/source.tar.gz -C /share/bench \
 && cd /share/bench/sources/binance_ws \

@@ -29,6 +29,7 @@ This project deploys 7 x `c6in.2xlarge` to measure WebSocket latency to Binance 
 
 - Terraform >= 1.0
 - AWS CLI configured with appropriate credentials
+- [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) for AWS CLI
 - Rust toolchain (for local testing)
 - jq (for parsing JSON outputs)
 
@@ -64,12 +65,18 @@ This creates `sources/source.tar.gz` containing the Rust project.
 
 ### 2. Configure Variables
 
-Edit `variables.tf` to customize:
-- `aws_region`: AWS region (default: ap-northeast-1)
-- `aws_vpc_id`: Target VPC ID
-- `aws_availability_zone_id`: Availability zone
-- `main_ec2_instance_type_client_ppg`: Instance types (default: 7x c6in.2xlarge)
+Copy the example tfvars file and fill in your environment-specific values:
+
+```bash
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Edit `terraform.tfvars` with your values:
+- `aws_vpc_id`: Your target VPC ID
+- `aws_availability_zone_id`: Target availability zone
 - `s3_bucket`: S3 bucket for source code distribution
+
+See `variables.tf` for all available options.
 
 ### 3. Deploy Infrastructure
 
@@ -93,22 +100,32 @@ The EC2 will run the `scripts/client.sh` automatically to
 
 ### 4. Access Instances
 
+Instances are accessed via AWS SSM Session Manager (no SSH keys or open ports needed).
+
 Login to specific instances:
 
 ```bash
-# Instance 0
-terraform output -raw private_key > priv.pem && chmod 600 priv.pem
-ssh -i priv.pem ec2-user@$(terraform output -json instance_public_ip_client_ppg | jq -r '.[0]')
+# List instance IDs
+terraform output -json instance_id_and_partition_id_mapping
 
-# Instance 1-6 (change index)
-ssh -i priv.pem ec2-user@$(terraform output -json instance_public_ip_client_ppg | jq -r '.[1]')
+# Start a session to a specific instance
+aws ssm start-session --target <instance-id> --region ap-northeast-1
 ```
 
-Run the Rust program simultaneously on all instances.
+Run the Rust program simultaneously on all instances:
 ```bash
 TARGET_IP=<target_ip_address>
 
+# Run on a single instance via SSM session
 sudo nohup taskset -c 0-1 /share/bench/sources/binance_ws/target/release/binance_ws $TARGET_IP > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 &
+
+# Or run on all instances at once via SSM send-command
+INSTANCE_IDS=$(terraform output -json instance_id_and_partition_id_mapping | jq -r 'keys[]')
+aws ssm send-command \
+  --targets "Key=instanceids,Values=$(echo $INSTANCE_IDS | tr ' ' ',')" \
+  --document-name "AWS-RunShellScript" \
+  --parameters "commands=['sudo nohup taskset -c 0-1 /share/bench/sources/binance_ws/target/release/binance_ws $TARGET_IP > /home/ec2-user/\$(ec2-metadata -i | awk \"{print \\$2}\").log 2>&1 &']" \
+  --region ap-northeast-1
 ```
 
 
@@ -145,7 +162,6 @@ The Rust client (`sources/binance_ws/src/main.rs`) performs:
 
 - `instance_public_ip_client_ppg`: Public IPs of all instances
 - `instance_id_and_partition_id_mapping`: Instance-to-partition mapping
-- `private_key`: SSH private key (sensitive)
 
 ## Troubleshooting
 

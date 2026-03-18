@@ -56,18 +56,10 @@ resource "aws_iam_policy" "s3_access_policy" {
     },
     {
       "Action": [
-        "s3:GetObject",
-        "s3:PutObject"
+        "s3:GetObject"
       ],
       "Effect": "Allow",
       "Resource": "arn:aws:s3:::${data.aws_s3_bucket.existing.bucket}/*"
-    },
-    {
-      "Action": [
-        "ec2:DescribeInstances"
-      ],
-      "Effect": "Allow",
-      "Resource": "*"
     }
   ]
 }
@@ -79,13 +71,18 @@ resource "aws_iam_role_policy_attachment" "attach" {
   policy_arn = aws_iam_policy.s3_access_policy.arn
 }
 
+resource "aws_iam_role_policy_attachment" "ssm" {
+  role       = aws_iam_role.ec2_s3_access.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 data "aws_vpc" "existing" {
   id = var.aws_vpc_id  # Replace with your actual VPC ID
 }
 
 resource "aws_subnet" "public" {
   vpc_id            = data.aws_vpc.existing.id
-  cidr_block        = "10.0.10.0/24"
+  cidr_block           = var.subnet_cidr_block
   availability_zone_id = var.aws_availability_zone_id
 
   tags = {
@@ -119,21 +116,9 @@ resource "aws_route_table" "rtb_public" {
   }
 }
 
-data "http" "ip" {
-  url = "https://ifconfig.me/ip"
-}
-
-resource "aws_security_group" "sg_22" {
-  name   = "sg_22"
+resource "aws_security_group" "main" {
+  name   = "ws-latency-sg"
   vpc_id = data.aws_vpc.existing.id
-
-  # SSH access from the VPC
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["${data.http.ip.response_body}/32"]
-  }
 
   egress {
     from_port   = 0
@@ -154,16 +139,6 @@ resource "aws_vpc_endpoint" "s3" {
 resource "aws_iam_instance_profile" "ec2_profile" {
   name = var.ec2_instance_profile_name
   role = aws_iam_role.ec2_s3_access.name
-}
-
-resource "tls_private_key" "main" {
-  algorithm = "RSA"
-  rsa_bits  = 4096
-}
-
-resource "aws_key_pair" "generated_key" {
-  key_name   = var.ssh_key_name
-  public_key = tls_private_key.main.public_key_openssh
 }
 
 data "aws_ami" "amazon_linux_2023" {
@@ -194,7 +169,9 @@ data "cloudinit_config" "cloudinit_client" {
   part {
     filename     = "client.sh"
     content_type = "text/x-shellscript-per-boot"
-    content      = file("${path.module}/scripts/client.sh")
+    content      = templatefile("${path.module}/scripts/client.sh", {
+      s3_bucket = var.s3_bucket
+    })
   }
 
   part {
@@ -212,9 +189,8 @@ resource "aws_instance" "client_ppg" {
   subnet_id                            = aws_subnet.public.id
   user_data                            = data.cloudinit_config.cloudinit_client.rendered
   user_data_replace_on_change          = true
-  security_groups                      = [aws_security_group.sg_22.id]
+  security_groups                      = [aws_security_group.main.id]
   iam_instance_profile                 = aws_iam_instance_profile.ec2_profile.name
-  key_name                             = aws_key_pair.generated_key.key_name
   depends_on                           = [aws_route_table.rtb_public, aws_placement_group.partition]
   associate_public_ip_address          = true
   hibernation                          = false
@@ -238,10 +214,4 @@ output "instance_id_and_partition_id_mapping" {
   value = {
     for idx, instance in aws_instance.client_ppg : instance.id => instance.placement_partition_number
   }
-}
-
-
-output "private_key" {
-  value     = tls_private_key.main.private_key_pem
-  sensitive = true
 }
