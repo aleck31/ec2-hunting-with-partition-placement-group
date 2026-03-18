@@ -70,3 +70,4 @@ terraform.rc
 **/graph-rag-cdc*
 **/app/*.zip
 **/target/*
+sources/source.tar.gz

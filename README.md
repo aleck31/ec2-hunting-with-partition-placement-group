@@ -1,18 +1,13 @@
-# Binance WebSocket EC2 Hunting
+# CEX WebSocket EC2 Hunting
 
-EC2 Hunting for Binance Futures WebSocket API latency using AWS EC2 instances with partition placement groups.
+EC2 Hunting for CEX WebSocket API latency using AWS EC2 instances with partition placement groups.
 
 ## Overview
 
-This project deploys 7 x `c6in.2xlarge` to measure WebSocket latency to Binance Futures API endpoints. The Rust client connects to specific Binance IPs and measures round-trip latency for market data requests using nanosecond-accurate monotonic timestamping.
+This project deploys 7 x `c6in.2xlarge` to measure WebSocket latency to CEX API endpoints. The Rust client connects to specific CEX IPs and measures round-trip latency for market data requests using nanosecond-accurate monotonic timestamping.
 
 ### The Hunting Path
 ![](assets/hunting-path.png)
-
-### Result
-![](assets/hunting-result-1.png)
-![](assets/hunting-result-2.png)
-![](assets/hunting-result-3.png)
 
 ### Architecture
 
@@ -21,9 +16,11 @@ This project deploys 7 x `c6in.2xlarge` to measure WebSocket latency to Binance 
 - **Region**: ap-northeast-1 (Tokyo)
 - **Performance Optimizations**:
   - Hyper-threading disabled
-  - Turbo boost disabled
+  - Turbo Boost disabled
   - CPU governor set to performance mode
   - CPU isolation (cores 0-1) for benchmark workload
+
+> **Note**: The goal is measurement consistency — ensuring observed latency differences come from network path placement, not CPU frequency fluctuation. Turbo Boost is disabled and CPU governor is locked to `performance` to keep frequency stable across all instances.
 
 ## Prerequisites
 
@@ -38,17 +35,17 @@ This project deploys 7 x `c6in.2xlarge` to measure WebSocket latency to Binance 
 Test the Rust WebSocket client locally before deployment:
 
 ```bash
-cd sources/binance_ws
+cd sources/cex_ws
 
-# Find Binance Futures WebSocket IPs
-dig +short ws-fapi.binance.com
+# Find CEX WebSocket IPs
+dig +short <ws-fapi.cex-endpoint.com>
 
 # Run with specific target IP
 cargo run <target_ip_address>
 ```
 
 The client will:
-- Connect to the specified Binance IP
+- Connect to the specified CEX IP
 - Send orderbook depth requests every second
 - Measure latency (min/max/avg/percentiles)
 - Exit after 600 samples with statistics
@@ -88,7 +85,7 @@ terraform apply --auto-approve
 This provisions:
 - Partition placement group with 7 partitions
 - VPC subnet, internet gateway, and routing
-- Security group (SSH access from your IP)
+- Security group (egress-only, no inbound ports)
 - S3 VPC endpoint
 - IAM roles and instance profiles
 - EC2 instances with cloud-init scripts
@@ -117,14 +114,14 @@ Run the Rust program simultaneously on all instances:
 TARGET_IP=<target_ip_address>
 
 # Run on a single instance via SSM session
-sudo nohup taskset -c 0-1 /share/bench/sources/binance_ws/target/release/binance_ws $TARGET_IP > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 &
+sudo nohup taskset -c 0-1 /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 &
 
 # Or run on all instances at once via SSM send-command
 INSTANCE_IDS=$(terraform output -json instance_id_and_partition_id_mapping | jq -r 'keys[]')
 aws ssm send-command \
   --targets "Key=instanceids,Values=$(echo $INSTANCE_IDS | tr ' ' ',')" \
   --document-name "AWS-RunShellScript" \
-  --parameters "commands=['sudo nohup taskset -c 0-1 /share/bench/sources/binance_ws/target/release/binance_ws $TARGET_IP > /home/ec2-user/\$(ec2-metadata -i | awk \"{print \\$2}\").log 2>&1 &']" \
+  --parameters "commands=['sudo nohup taskset -c 0-1 /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP > /home/ec2-user/\$(ec2-metadata -i | awk \"{print \\$2}\").log 2>&1 &']" \
   --region ap-northeast-1
 ```
 
@@ -149,9 +146,9 @@ terraform destroy --auto-approve
 
 ## Benchmark Configuration
 
-The Rust client (`sources/binance_ws/src/main.rs`) performs:
+The Rust client (`sources/cex_ws/src/main.rs`) performs:
 
-1. **Connection**: Connects to specified Binance IP via WebSocket
+1. **Connection**: Connects to specified CEX endpoint via WebSocket
 2. **Warm-up**: Skips first 5 requests
 3. **Measurement**: Records 600 samples with 1-second intervals
 4. **Metrics**: Tracks min, max, average, and percentiles (p50, p75, p90, p99, p99.9)
@@ -174,7 +171,7 @@ cat /var/log/cloud-init-output.log
 ### Check Running Process
 
 ```bash
-ps aux | grep binance_ws
+ps aux | grep cex_ws
 ```
 
 ### Verify CPU Configuration
@@ -197,20 +194,20 @@ cat /sys/devices/system/cpu/intel_pstate/no_turbo
 ├── main.tf                    # Main Terraform configuration
 ├── variables.tf               # Variable definitions
 ├── providers.tf               # AWS provider configuration
-├── pack_source.sh            # Script to package Rust source
+├── terraform.tfvars.example   # Example variable values
+├── pack_source.sh             # Script to package Rust source
 ├── scripts/
-│   ├── client.sh             # EC2 initialization script
-│   └── cloud-config.yaml     # Cloud-init configuration
+│   ├── client.sh              # EC2 initialization script
+│   └── cloud-config.yaml      # Cloud-init configuration
 └── sources/
-    └── binance_ws/           # Rust WebSocket client
+    └── cex_ws/            # Rust WebSocket client
         ├── Cargo.toml
         └── src/
-            └── main.rs       # Main benchmark logic
+            └── main.rs        # Main benchmark logic
 ```
 
 ## Notes
 
-- Target IP is hardcoded in `scripts/client.sh` - update before deployment
-- Benchmark runs automatically on instance boot
+- Benchmark does not auto-run; you need to manually start it via SSM (see step 4)
 - Results are logged to `/home/ec2-user/<instance-id>.log`
 - Process exits after 600 samples (~10 minutes)

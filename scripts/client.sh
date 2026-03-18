@@ -9,9 +9,10 @@ do
 	sudo echo 0 > /sys/devices/system/cpu/cpu$cpunum/online
 done
 
-# Enable Turbo boost (0 = turbo enabled)
+# Disable Turbo Boost (1 = turbo disabled) to ensure consistent CPU frequency,
+# so that latency differences reflect network path, not CPU frequency fluctuation.
 # https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/processor_state_control.html
-sudo sh -c "echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo"
+sudo sh -c "echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo"
 sudo cpupower frequency-set --governor performance
 
 mkdir -p /share \
@@ -22,7 +23,7 @@ mkdir -p /share \
 && aws s3 cp s3://${s3_bucket}/source.tar.gz /share/source.tar.gz \
 && mkdir -p /share/bench \
 && tar -zxf /share/source.tar.gz -C /share/bench \
-&& cd /share/bench/sources/binance_ws \
+&& cd /share/bench/sources/cex_ws \
 && sudo /share/.cargo/bin/cargo build --release
 
 # Isolate work from kernal thread
@@ -31,4 +32,4 @@ sudo tuna isolate --cpus=0-1
 
 ### If you want to run it once the init ready
 #TARGET_IP=54.168.162.131
-#sudo nohup taskset -c 0-1 /share/bench/sources/binance_ws/target/release/binance_ws $TARGET_IP > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 &
+#sudo nohup taskset -c 0-1 /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 &

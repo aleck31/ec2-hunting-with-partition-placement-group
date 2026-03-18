@@ -1,5 +1,5 @@
 [package]
-name = "binance_ws"
+name = "cex_ws"
 version = "0.1.0"
 edition = "2024"
 

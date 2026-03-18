@@ -17,7 +17,7 @@ async fn main() {
     }
     let target_ip = args[1].clone();
 
-    let url = Url::parse("wss://ws-fapi.binance.com/ws-fapi/v1").unwrap();
+    let url = Url::parse("wss://<cex-ws-endpoint>/ws-fapi/v1").unwrap();
     let app_start = Instant::now();
 
     println!("[{}] Program started, target ip: {}", timestamp_us(), target_ip);
@@ -51,7 +51,7 @@ async fn main() {
     };
 
     let connected = Instant::now();
-    println!("[{}, {}] Connected to Binance Futures WebSocket, taken {}µs", timestamp_us(), peer_ip, (connected - app_start).as_micros());
+    println!("[{}, {}] Connected to CEX WebSocket, taken {}µs", timestamp_us(), peer_ip, (connected - app_start).as_micros());
 
     let (send_tx, send_rx) = mpsc::channel::<(String, Instant, Message)>(32);
 
