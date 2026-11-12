@@ -6,6 +6,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// Idle time before each connection's first request, to drain the previous connection and reconnect
+pub const GAP: Duration = Duration::from_secs(2);
+
 /// Spin this long before each slot; tokio's timer has 1 ms resolution and can oversleep by a few ms
 const SPIN: Duration = Duration::from_millis(5);
 
@@ -78,6 +81,48 @@ impl Grid {
     }
 }
 
+/// Slot plan shared by all instances: each connection gets `gap` idle slots, then `warmup` and `per_conn` request slots.
+#[derive(Clone, Copy)]
+pub struct Layout {
+    pub gap: u64,
+    pub warmup: u64,
+    pub per_conn: u64,
+    pub connections: u64,
+}
+
+impl Layout {
+    pub fn new(interval_ms: u64, warmup: u64, samples: u64, connections: u64) -> Self {
+        Layout {
+            gap: (GAP.as_millis() as u64).div_ceil(interval_ms).max(1),
+            warmup,
+            per_conn: samples.div_ceil(connections),
+            connections,
+        }
+    }
+
+    pub fn period(&self) -> u64 {
+        self.gap + self.warmup + self.per_conn
+    }
+
+    /// First and one-past-last request slot of connection `c`
+    pub fn requests(&self, c: u64) -> (u64, u64) {
+        (c * self.period() + self.gap, (c + 1) * self.period())
+    }
+
+    pub fn is_warmup(&self, slot: u64) -> bool {
+        slot % self.period() < self.gap + self.warmup
+    }
+}
+
+/// The request id echoed in a response's top-level `field`, as text whether it came back as a string or a number
+pub fn id_of(json: &serde_json::Value, field: &str) -> Option<String> {
+    match json.get(field)? {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
 /// "n=… min=… p50=… … max=…" in µs; a percentile is shown only with at least 5 samples above it
 pub fn stats(values: &[u64]) -> String {
     if values.is_empty() {
@@ -143,6 +188,29 @@ pub fn tcp_info(_fd: RawFd) -> Option<TcpInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_gives_each_connection_a_gap_then_warmup_then_samples() {
+        let l = Layout {
+            gap: 2,
+            warmup: 1,
+            per_conn: 3,
+            connections: 2,
+        };
+        assert_eq!(l.requests(0), (2, 6));
+        assert_eq!(l.requests(1), (8, 12));
+        let warm: Vec<u64> = (0..12).filter(|&s| l.is_warmup(s)).collect();
+        assert_eq!(warm, [0, 1, 2, 6, 7, 8]);
+    }
+
+    #[test]
+    fn id_of_accepts_string_and_number_ids() {
+        let j: serde_json::Value =
+            serde_json::from_str(r#"{"id":"7","req_id":7,"x":null}"#).unwrap();
+        assert_eq!(id_of(&j, "id").as_deref(), Some("7"));
+        assert_eq!(id_of(&j, "req_id").as_deref(), Some("7"));
+        assert_eq!(id_of(&j, "x"), None);
+    }
 
     #[test]
     fn stats_hides_percentiles_without_enough_samples_above() {

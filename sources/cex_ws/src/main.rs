@@ -1,4 +1,5 @@
 mod common;
+mod http;
 mod probe;
 mod stream;
 mod ws;
@@ -19,6 +20,8 @@ enum Command {
     Probe(probe::ProbeArgs),
     /// WebSocket request/response round trips on established connections
     Ws(ws::WsArgs),
+    /// HTTP request round trips on keep-alive connections (REST APIs)
+    Http(http::HttpArgs),
     /// Arrival times of stream events, compared across instances
     Stream(stream::StreamArgs),
 }
@@ -28,6 +31,7 @@ async fn main() {
     let result = match Cli::parse().command {
         Command::Probe(args) => probe::run(args).await,
         Command::Ws(args) => ws::run(args).await,
+        Command::Http(args) => http::run(args).await,
         Command::Stream(args) => stream::run(args).await,
     };
     if let Err(e) = result {

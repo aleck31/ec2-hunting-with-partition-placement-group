@@ -11,15 +11,13 @@ use tokio_tungstenite::{
 };
 use url::Url;
 
-use crate::common::{self, Grid, Result, RunArgs};
+use crate::common::{self, GAP, Grid, Layout, Result, RunArgs};
 
 pub type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 const DEFAULT_REQUEST: &str =
     r#"{"id": "{id}","method": "depth","params": {"symbol": "BTCUSDT","limit": 5}}"#;
 const CONNECT_ATTEMPTS: u32 = 3;
-/// Idle time before each connection's first request, to drain the previous connection and reconnect
-const GAP: Duration = Duration::from_secs(2);
 
 #[derive(clap::Args)]
 pub struct WsArgs {
@@ -28,9 +26,12 @@ pub struct WsArgs {
     /// WebSocket API URL, e.g. wss://ws-fapi.binance.com/ws-fapi/v1
     #[arg(long)]
     url: Url,
-    /// JSON request; {id} is replaced per request and must come back as the response's string "id"
+    /// JSON request; {id} is replaced by the slot number, which must come back in --id-field
     #[arg(long, default_value = DEFAULT_REQUEST)]
     request: String,
+    /// Top-level response field that echoes the request id (string or number)
+    #[arg(long, default_value = "id")]
+    id_field: String,
     /// Measured responses in total, split evenly over the connections
     #[arg(long, default_value_t = 600)]
     samples: u64,
@@ -44,30 +45,6 @@ pub struct WsArgs {
     interval_ms: u64,
     #[command(flatten)]
     run: RunArgs,
-}
-
-/// Slot plan shared by all instances: each connection gets `gap` idle slots, then `warmup` and `per_conn` request slots.
-#[derive(Clone, Copy)]
-struct Layout {
-    gap: u64,
-    warmup: u64,
-    per_conn: u64,
-    connections: u64,
-}
-
-impl Layout {
-    fn period(&self) -> u64 {
-        self.gap + self.warmup + self.per_conn
-    }
-
-    /// First and one-past-last request slot of connection `c`
-    fn requests(&self, c: u64) -> (u64, u64) {
-        (c * self.period() + self.gap, (c + 1) * self.period())
-    }
-
-    fn is_warmup(&self, slot: u64) -> bool {
-        slot % self.period() < self.gap + self.warmup
-    }
 }
 
 struct Sample {
@@ -95,12 +72,12 @@ pub async fn run(args: WsArgs) -> Result<()> {
     if args.samples == 0 || args.connections == 0 || args.interval_ms == 0 {
         return Err("--samples, --connections and --interval-ms must be positive".into());
     }
-    let layout = Layout {
-        gap: (GAP.as_millis() as u64).div_ceil(args.interval_ms).max(1),
-        warmup: args.warmup,
-        per_conn: args.samples.div_ceil(args.connections),
-        connections: args.connections,
-    };
+    let layout = Layout::new(
+        args.interval_ms,
+        args.warmup,
+        args.samples,
+        args.connections,
+    );
     let grid = Grid::new(args.run.start_at, Duration::from_millis(args.interval_ms));
     let addr = SocketAddr::new(args.target_ip, args.url.port_or_known_default().unwrap());
 
@@ -142,7 +119,7 @@ pub async fn run(args: WsArgs) -> Result<()> {
                     let recv = Instant::now();
                     match msg {
                         Some(Ok(Message::Text(data))) => {
-                            let id = serde_json::from_str::<Value>(&data).ok().and_then(|j| j["id"].as_str().map(str::to_owned));
+                            let id = serde_json::from_str::<Value>(&data).ok().and_then(|j| common::id_of(&j, &args.id_field));
                             let Some((slot, sent, offset)) = id.and_then(|id| pending.remove(&id)) else { continue };
                             let info = common::tcp_info(fd(&ws));
                             retrans = info.as_ref().map_or(retrans, |i| i.total_retrans);
@@ -291,24 +268,5 @@ pub fn fd(ws: &Ws) -> std::os::fd::RawFd {
         MaybeTlsStream::Rustls(tls) => tls.get_ref().0.as_raw_fd(),
         MaybeTlsStream::Plain(tcp) => tcp.as_raw_fd(),
         _ => -1,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn layout_gives_each_connection_a_gap_then_warmup_then_samples() {
-        let l = Layout {
-            gap: 2,
-            warmup: 1,
-            per_conn: 3,
-            connections: 2,
-        };
-        assert_eq!(l.requests(0), (2, 6));
-        assert_eq!(l.requests(1), (8, 12));
-        let warm: Vec<u64> = (0..12).filter(|&s| l.is_warmup(s)).collect();
-        assert_eq!(warm, [0, 1, 2, 6, 7, 8]);
     }
 }

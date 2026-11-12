@@ -1,5 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::os::fd::AsRawFd;
+use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use tokio::net::TcpStream;
@@ -10,9 +11,10 @@ const TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(clap::Args)]
 pub struct ProbeArgs {
-    /// Target IPs, comma separated; give every instance the same list in the same order so slots pair up
+    /// Targets as IP or IP:port, comma separated; give every instance the same list in the same order so slots pair up
     #[arg(long, value_delimiter = ',', required = true)]
-    targets: Vec<IpAddr>,
+    targets: Vec<Target>,
+    /// Port for targets given without one
     #[arg(long, default_value_t = 443)]
     port: u16,
     /// Measured handshakes per target
@@ -28,9 +30,31 @@ pub struct ProbeArgs {
     run: RunArgs,
 }
 
+#[derive(Clone)]
+pub struct Target {
+    ip: IpAddr,
+    port: Option<u16>,
+}
+
+impl FromStr for Target {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
+        if let Ok(addr) = s.parse::<SocketAddr>() {
+            return Ok(Target {
+                ip: addr.ip(),
+                port: Some(addr.port()),
+            });
+        }
+        s.parse()
+            .map(|ip| Target { ip, port: None })
+            .map_err(|_| format!("invalid target {s}: expected IP or IP:port"))
+    }
+}
+
 struct Sample {
     slot: u64,
-    target: IpAddr,
+    target: SocketAddr,
     warmup: bool,
     status: &'static str,
     offset_us: i64,
@@ -43,7 +67,12 @@ pub async fn run(args: ProbeArgs) -> Result<()> {
     if args.count == 0 || args.interval_ms == 0 {
         return Err("--count and --interval-ms must be positive".into());
     }
-    let n_targets = args.targets.len() as u64;
+    let targets: Vec<SocketAddr> = args
+        .targets
+        .iter()
+        .map(|t| SocketAddr::new(t.ip, t.port.unwrap_or(args.port)))
+        .collect();
+    let n_targets = targets.len() as u64;
     let total = (args.warmup + args.count) * n_targets;
     let grid = Grid::new(args.run.start_at, Duration::from_millis(args.interval_ms));
     eprintln!(
@@ -55,7 +84,7 @@ pub async fn run(args: ProbeArgs) -> Result<()> {
 
     let mut samples = Vec::with_capacity(total as usize);
     for slot in 0..total {
-        let target = args.targets[(slot % n_targets) as usize];
+        let target = targets[(slot % n_targets) as usize];
         let mut s = Sample {
             slot,
             target,
@@ -68,12 +97,7 @@ pub async fn run(args: ProbeArgs) -> Result<()> {
         if grid.wait(slot).await {
             s.offset_us = grid.offset_us(slot);
             let start = Instant::now();
-            match tokio::time::timeout(
-                TIMEOUT,
-                TcpStream::connect(SocketAddr::new(target, args.port)),
-            )
-            .await
-            {
+            match tokio::time::timeout(TIMEOUT, TcpStream::connect(target)).await {
                 Ok(Ok(stream)) => {
                     s.connect_us = start.elapsed().as_micros() as u64;
                     // The kernel's first RTT sample is the SYN/SYN-ACK exchange, free of user-space wakeup delay
@@ -92,7 +116,7 @@ pub async fn run(args: ProbeArgs) -> Result<()> {
         "TCP handshake RTT per target in µs (kernel SYN/SYN-ACK sample; connect() time in brackets):"
     );
     let mut all = Vec::new();
-    for target in &args.targets {
+    for target in &targets {
         let measured: Vec<&Sample> = samples
             .iter()
             .filter(|s| s.target == *target && !s.warmup)
@@ -124,4 +148,18 @@ pub async fn run(args: ProbeArgs) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_takes_an_optional_port() {
+        let t: Target = "10.0.0.1:9000".parse().unwrap();
+        assert_eq!((t.ip.to_string(), t.port), ("10.0.0.1".into(), Some(9000)));
+        let t: Target = "10.0.0.1".parse().unwrap();
+        assert_eq!(t.port, None);
+        assert!("example.com".parse::<Target>().is_err());
+    }
 }
