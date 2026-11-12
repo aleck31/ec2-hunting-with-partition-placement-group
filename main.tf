@@ -175,7 +175,7 @@ data "aws_ami" "amazon_linux_2023" {
 
 data "cloudinit_config" "cloudinit_client" {
   gzip          = false
-  base64_encode = true
+  base64_encode = false
 
   part {
     filename     = "client.sh"

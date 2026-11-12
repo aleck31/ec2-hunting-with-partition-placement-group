@@ -84,6 +84,8 @@ python3 -m unittest tests/test_hunt.py
 cd sources/cex_ws && cargo test
 ```
 
+Provider versions are locked in `.terraform.lock.hcl` (AWS provider 6.73.0); upgrade deliberately with `terraform init -upgrade` and commit the lock file.
+
 `cargo run --release -- probe --targets <ip>` runs a mode locally (`--help` per mode); behind a proxy or VPN, TCP figures only reach the proxy.
 
 Layout: Terraform at the root, `scripts/` (boot script and `hunt.py`), `sources/cex_ws/` (Rust client), `targets/` (exchange profiles), `docs/`, `tests/`, `assets/`.
