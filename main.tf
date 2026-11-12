@@ -81,20 +81,22 @@ data "aws_vpc" "existing" {
 }
 
 resource "aws_subnet" "public" {
-  vpc_id            = data.aws_vpc.existing.id
+  vpc_id               = data.aws_vpc.existing.id
   cidr_block           = var.subnet_cidr_block
   availability_zone_id = var.aws_availability_zone_id
 
   tags = {
-    Name = "main-public-snet"
+    Name = "ws-latency-subnet"
   }
 }
 
+# A VPC takes only one Internet Gateway, so reuse the existing one when given
 resource "aws_internet_gateway" "main" {
+  count  = var.internet_gateway_id == null ? 1 : 0
   vpc_id = data.aws_vpc.existing.id
 
   tags = {
-    Name = "main-igw"
+    Name = "ws-latency-igw"
   }
 }
 
@@ -108,11 +110,11 @@ resource "aws_route_table" "rtb_public" {
 
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
+    gateway_id = var.internet_gateway_id != null ? var.internet_gateway_id : aws_internet_gateway.main[0].id
   }
 
   tags = {
-    Name = "main-rt"
+    Name = "ws-latency-rt"
   }
 }
 

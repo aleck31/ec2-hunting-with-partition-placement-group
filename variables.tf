@@ -37,6 +37,12 @@ variable "instance_count" {
   }
 }
 
+variable "internet_gateway_id" {
+  description = "Existing Internet Gateway of the VPC to route through; null creates one (fails if the VPC already has one)"
+  type        = string
+  default     = null
+}
+
 variable "ami_id" {
   description = "AMI to hunt with; set it to your production AMI (x86_64). Null uses the latest AL2023 kernel-6.18 AMI"
   type        = string

@@ -1,4 +1,4 @@
-# Maps count-style addresses (client_ppg[N]) to for_each keys so deployments made with count are not replaced
+# Maps earlier state addresses (count-based instances, the unconditional IGW) so existing deployments are not replaced
 moved {
   from = aws_instance.client_ppg[0]
   to   = aws_instance.client_ppg["0"]
@@ -32,4 +32,9 @@ moved {
 moved {
   from = aws_instance.client_ppg[6]
   to   = aws_instance.client_ppg["6"]
+}
+
+moved {
+  from = aws_internet_gateway.main
+  to   = aws_internet_gateway.main[0]
 }

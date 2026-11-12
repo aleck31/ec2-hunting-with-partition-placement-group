@@ -59,6 +59,17 @@ run "more_instances_than_partitions" {
   }
 }
 
+run "existing_internet_gateway" {
+  command = plan
+  variables {
+    internet_gateway_id = "igw-0123456789abcdef0"
+  }
+  assert {
+    condition     = length(aws_internet_gateway.main) == 0 && one([for r in aws_route_table.rtb_public.route : r.gateway_id]) == "igw-0123456789abcdef0"
+    error_message = "A given internet_gateway_id must be reused, not created"
+  }
+}
+
 run "keep_winner" {
   variables {
     keep_instances = [3]
