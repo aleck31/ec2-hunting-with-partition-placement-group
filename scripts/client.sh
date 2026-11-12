@@ -111,4 +111,4 @@ if [ "$REBOOT" -eq 1 ]; then systemctl --no-block reboot; fi
 ### To start the benchmark on boot (after the tuning reboot), uncomment and set the target
 #TARGET_IP=203.0.113.10
 #WS_URL=wss://ws-fapi.example-exchange.com/ws-fapi/v1
-#if [ "$REBOOT" -eq 0 ]; then nohup taskset -c "$(cat /sys/devices/system/cpu/isolated)" "$BIN" "$TARGET_IP" --url "$WS_URL" > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 & fi
+#if [ "$REBOOT" -eq 0 ]; then nohup taskset -c "$(cat /sys/devices/system/cpu/isolated)" "$BIN" ws "$TARGET_IP" --url "$WS_URL" > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 & fi
