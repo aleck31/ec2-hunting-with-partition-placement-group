@@ -184,38 +184,52 @@ data "cloudinit_config" "cloudinit_client" {
   }
 }
 
+locals {
+  instance_indices = var.keep_instances != null ? var.keep_instances : range(length(var.main_ec2_instance_type_client_ppg))
+}
+
+# Keyed by index ("0".."6") so dropping losers via keep_instances doesn't shift the winner's address
 resource "aws_instance" "client_ppg" {
-  count                                = length(var.main_ec2_instance_type_client_ppg)
+  for_each                             = toset([for i in local.instance_indices : tostring(i)])
   ami                                  = var.ami_id != null ? var.ami_id : data.aws_ami.amazon_linux_2023[0].image_id
-  instance_type                        = var.main_ec2_instance_type_client_ppg[count.index]
+  instance_type                        = var.main_ec2_instance_type_client_ppg[tonumber(each.key)]
   subnet_id                            = aws_subnet.public.id
   user_data                            = data.cloudinit_config.cloudinit_client.rendered
-  user_data_replace_on_change          = true
-  security_groups                      = [aws_security_group.main.id]
+  vpc_security_group_ids               = [aws_security_group.main.id]
   iam_instance_profile                 = aws_iam_instance_profile.ec2_profile.name
   depends_on                           = [aws_route_table.rtb_public, aws_placement_group.partition]
   associate_public_ip_address          = true
   hibernation                          = false
   instance_initiated_shutdown_behavior = "terminate"
   placement_group                      = aws_placement_group.partition.name
-  placement_partition_number = count.index + 1
+  placement_partition_number           = tonumber(each.key) + 1
 
   cpu_options {
     threads_per_core = 1
   }
 
-  # A new AMI means a relaunch, which loses the hunted placement; use -replace to re-hunt deliberately
+  # A new AMI means a relaunch and new user data means a stop/start; both lose the hunted placement
   lifecycle {
-    ignore_changes = [ami]
+    ignore_changes = [ami, user_data]
   }
 
   tags = {
-    Name = "client-ppg-${count.index}"
+    Name = "client-ppg-${each.key}"
   }
 }
 
 output "instance_public_ip_client_ppg" {
   value = [for s in aws_instance.client_ppg : s.public_ip]
+}
+
+output "instances" {
+  description = "Instance index (as used by keep_instances) => instance ID and partition"
+  value = {
+    for idx, instance in aws_instance.client_ppg : idx => {
+      id        = instance.id
+      partition = instance.placement_partition_number
+    }
+  }
 }
 
 output "instance_id_and_partition_id_mapping" {

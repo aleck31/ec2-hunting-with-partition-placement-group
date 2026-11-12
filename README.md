@@ -82,7 +82,7 @@ See `variables.tf` for all available options.
 Set `ami_id` to the AMI the winning instance will run in production (e.g. your latency-tuned golden AMI). An instance keeps its host across reboots, but switching to another AMI means launching a new instance, which lands on a new host and throws the hunted placement away. Without `ami_id`, the latest Amazon Linux 2023 AMI with kernel 6.18 is used.
 
 - The AMI must be x86_64 with cloud-init, AWS CLI v2 (to fetch the source from S3) and SSM Agent (the only access path). `scripts/client.sh` is written for Amazon Linux 2023; on other distributions its tuning steps may fail.
-- Existing instances ignore later changes to `ami_id` or to the default AMI. To re-hunt with a new AMI, run `terraform apply -replace='aws_instance.client_ppg[N]'` per instance, or destroy and apply again.
+- Existing instances ignore later changes to `ami_id` or to the default AMI. To re-hunt with a new AMI, run `terraform apply -replace='aws_instance.client_ppg["N"]'` per instance, or destroy and apply again.
 - If the AMI isolates CPUs, pin the benchmark to those cores (`cat /sys/devices/system/cpu/isolated`) instead of `0-1` in step 4.
 
 ### 3. Deploy Infrastructure
@@ -148,7 +148,27 @@ tail -f /home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log
 cat /var/log/cloud-init-output.log
 ```
 
-### 6. Destroy Infrastructure
+### 6. Keep the Winner
+
+Find the index of the best instance (`terraform output instances` maps index to instance ID and partition), then keep only it:
+
+```hcl
+# terraform.tfvars
+keep_instances = [3]
+```
+
+```bash
+terraform plan    # must only destroy the other instances
+terraform apply
+```
+
+To protect the winner's placement:
+- Only reboot it. Stop/start, changing instance type, size, CPU options, user data, placement group or tenancy moves it to another host, so hunt with the production instance type, size and AMI.
+- Later edits to `ami_id` or `scripts/` are ignored for existing instances, so re-applying doesn't replace them; they apply to newly launched instances only.
+- `terraform destroy` removes everything, including the winner.
+- Re-hunt periodically, as exchange endpoints and AWS capacity change over time: remove `keep_instances` and apply to launch fresh instances alongside the winner.
+
+### 7. Destroy Infrastructure
 
 ```bash
 terraform destroy --auto-approve
@@ -169,6 +189,7 @@ The Rust client (`sources/cex_ws/src/main.rs`) performs:
 
 - `instance_public_ip_client_ppg`: Public IPs of all instances
 - `instance_id_and_partition_id_mapping`: Instance-to-partition mapping
+- `instances`: Instance index (used by `keep_instances`) to instance ID and partition
 
 ## Troubleshooting
 
@@ -202,10 +223,13 @@ cat /sys/devices/system/cpu/intel_pstate/no_turbo
 ```
 .
 ├── main.tf                    # Main Terraform configuration
+├── moved.tf                   # State address migration for instances
 ├── variables.tf               # Variable definitions
 ├── providers.tf               # AWS provider configuration
 ├── terraform.tfvars.example   # Example variable values
 ├── pack_source.sh             # Script to package Rust source
+├── tests/
+│   └── hunt.tftest.hcl        # Offline `terraform test` checks (mock AWS)
 ├── scripts/
 │   ├── client.sh              # EC2 initialization script
 │   └── cloud-config.yaml      # Cloud-init configuration

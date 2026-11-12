@@ -5,5 +5,6 @@ s3_bucket                = "your-s3-bucket-name"
 
 # Optional - uncomment to override defaults
 # ami_id                 = "ami-xxxxxxxxxxxxxxxxx"  # your production AMI; default is the latest AL2023 (kernel 6.18)
+# keep_instances         = [3]                      # after hunting: keep only these instance indices
 # aws_region             = "ap-northeast-1"
 # subnet_cidr_block      = "10.0.10.0/24"

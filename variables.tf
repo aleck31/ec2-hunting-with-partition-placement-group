@@ -32,6 +32,12 @@ variable "ami_id" {
   default     = null
 }
 
+variable "keep_instances" {
+  description = "After hunting, indices of the instances to keep (e.g. [3]); the others are terminated. Null keeps all"
+  type        = list(number)
+  default     = null
+}
+
 variable "partition_placement_group_name" {
   description = "Name of the partition placement group"
   type        = string
