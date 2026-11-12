@@ -71,3 +71,6 @@ terraform.rc
 **/app/*.zip
 **/target/*
 sources/source.tar.gz
+# hunt.py downloads
+results/
+__pycache__/

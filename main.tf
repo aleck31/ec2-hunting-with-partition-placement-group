@@ -60,6 +60,13 @@ resource "aws_iam_policy" "s3_access_policy" {
       ],
       "Effect": "Allow",
       "Resource": "arn:aws:s3:::${data.aws_s3_bucket.existing.bucket}/*"
+    },
+    {
+      "Action": [
+        "s3:PutObject"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::${data.aws_s3_bucket.existing.bucket}/results/*"
     }
   ]
 }
@@ -229,6 +236,15 @@ resource "aws_instance" "client_ppg" {
 
 output "instance_public_ip_client_ppg" {
   value = [for s in aws_instance.client_ppg : s.public_ip]
+}
+
+output "s3_bucket" {
+  description = "Bucket holding the client source and the results/ uploaded by scripts/hunt.py"
+  value       = data.aws_s3_bucket.existing.bucket
+}
+
+output "aws_region" {
+  value = var.aws_region
 }
 
 output "instances" {

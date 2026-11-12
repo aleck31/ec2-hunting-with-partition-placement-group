@@ -4,15 +4,17 @@ EC2 Hunting for CEX WebSocket API latency using AWS EC2 instances with partition
 
 ## Overview
 
-This project deploys a fleet of EC2 instances (default 7 × `c8i.2xlarge`) in a partition placement group to measure WebSocket latency to CEX API endpoints. The Rust client connects to specific CEX IPs and measures round-trip latency for market data requests with monotonic timestamps in µs.
+This project launches a fleet of EC2 instances (default 7 × `c8i.2xlarge`) in a partition placement group, measures every instance's latency to a crypto exchange's endpoints at the same moments, ranks the instances, and keeps the winner as the production host.
+
+Measurement follows two rules: rank by a network-only metric that uses the same protocol as real traffic (TCP handshake RTT), and collect every sample centrally for offline percentile, histogram and paired analysis. Application-level round trips and market-data arrival are measured as well, to confirm the ranking on the paths that matter.
 
 ### The Hunting Path
 ![](assets/hunting-path.png)
 
 ### Architecture
 
-- **EC2 Instances**: `instance_count` × `instance_type` (default 7 × `c8i.2xlarge`), spread round-robin over the 7 partitions
-- **Placement Strategy**: Partition placement group for network isolation
+- **EC2 Instances**: `instance_count` × `instance_type` (default 7 × `c8i.2xlarge`), spread round-robin over the 7 partitions, plus optional `unplaced_instance_count` instances outside the placement group
+- **Placement Strategy**: Partition placement group; see [What the placement group gives you](#what-the-placement-group-gives-you)
 - **AMI**: your production AMI via `ami_id`, otherwise Amazon Linux 2023 (kernel 6.18)
 - **Region**: ap-northeast-1 (Tokyo)
 - **Performance Optimizations** (`scripts/client.sh`, logged at every boot with a `HUNT:` prefix):
@@ -26,27 +28,27 @@ This project deploys a fleet of EC2 instances (default 7 × `c8i.2xlarge`) in a 
 
 ## Prerequisites
 
-- Terraform >= 1.0
-- AWS CLI configured with appropriate credentials
-- [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) for AWS CLI
-- Rust toolchain (for local testing)
-- jq (for parsing JSON outputs)
+- Terraform >= 1.7
+- AWS CLI v2 with credentials for the target account; [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) for interactive sessions
+- Python 3.9+ for `scripts/hunt.py`
+- An existing VPC and S3 bucket in the region
+- A Running On-Demand vCPU quota well above the fleet size: hunting launches every instance at once
+- Rust toolchain (for local testing only)
+
+The client and default AMI are x86_64 only, and the tuning in `client.sh` targets Amazon Linux 2023.
 
 ## Local Testing
 
-Test the Rust WebSocket client locally before deployment:
-
 ```bash
 cd sources/cex_ws
+dig +short <ws-fapi.cex-endpoint.com>            # candidate IPs
 
-# Find CEX WebSocket IPs
-dig +short <ws-fapi.cex-endpoint.com>
-
-# Run against one IP, e.g. 10 quick samples
-cargo run --release -- <target_ip_address> --url wss://<ws-fapi.cex-endpoint.com>/ws-fapi/v1 --samples 10 --interval-ms 200
+cargo run --release -- probe --targets <ip1>,<ip2> --count 20
+cargo run --release -- ws <ip> --url wss://<ws-fapi.cex-endpoint.com>/ws-fapi/v1 --samples 10 --connections 2 --interval-ms 200
+cargo run --release -- stream <ip> --url wss://<fstream.cex-endpoint.com>/ws/btcusdt@bookTicker --seconds 5
 ```
 
-Options (see [Benchmark Configuration](#benchmark-configuration)): `--url` (required), `--request`, `--samples`, `--interval-ms`. The kernel TCP RTT is reported on Linux only. Behind a local proxy or VPN the TCP RTT only covers the hop to the proxy, so compare it with the app round trip on EC2, not on a laptop.
+Kernel TCP figures are reported on Linux only. Behind a local proxy or VPN, TCP figures only cover the hop to the proxy; measure on EC2.
 
 ## Deployment
 
@@ -60,17 +62,17 @@ This creates `sources/source.tar.gz` containing the Rust project.
 
 ### 2. Configure Variables
 
-Copy the example tfvars file and fill in your environment-specific values:
-
 ```bash
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-Edit `terraform.tfvars` with your values:
-- `aws_vpc_id`: Your target VPC ID
-- `aws_availability_zone_id`: Target availability zone
-- `s3_bucket`: S3 bucket for source code distribution
+Edit `terraform.tfvars`:
+- `aws_vpc_id`: your target VPC ID
+- `aws_availability_zone_id`: the AZ **ID** (e.g. `apne1-az4`), not the AZ name; names map to different AZs in every account. Use the exchange's AZ ID
+- `s3_bucket`: S3 bucket for the client source and the results
+- `internet_gateway_id` (optional): the VPC's existing Internet Gateway; required when the VPC already has one, since a VPC takes only one
 - `instance_type`, `instance_count` (optional): the production type and size, and how many placements to sample (default 7 × `c8i.2xlarge`)
+- `unplaced_instance_count` (optional): extra instances outside the placement group
 - `ami_id` (optional): the AMI to hunt with, see below
 
 See `variables.tf` for all available options.
@@ -80,7 +82,7 @@ See `variables.tf` for all available options.
 Set `instance_type` and `ami_id` to what the winning instance will run in production (e.g. your latency-tuned golden AMI). An instance keeps its host across reboots, but changing its type or size needs a stop/start and switching AMI means launching a new instance; both move it to a new host and throw the hunted placement away. Without `ami_id`, the latest Amazon Linux 2023 AMI with kernel 6.18 is used.
 
 - The AMI must be x86_64 with cloud-init, AWS CLI v2 (to fetch the source from S3) and SSM Agent (the only access path). `scripts/client.sh` is written for Amazon Linux 2023; on other distributions its tuning steps may fail.
-- Existing instances ignore later changes to `instance_type`, `ami_id` or the default AMI. To re-hunt with a new type or AMI, run `terraform apply -replace='aws_instance.client_ppg["N"]'` per instance, or destroy and apply again.
+- Existing instances ignore later changes to `instance_type`, `ami_id`, the default AMI or placement settings. To re-hunt with a new type or AMI, run `terraform apply -replace='aws_instance.client_ppg["N"]'` per instance, or destroy and apply again.
 - If the AMI already sets `isolcpus`, `client.sh` leaves the kernel command line unchanged and the benchmark runs on the AMI's isolated cores.
 
 ### 3. Deploy Infrastructure
@@ -92,64 +94,46 @@ terraform apply --auto-approve
 
 This provisions:
 - Partition placement group with 7 partitions
-- VPC subnet, internet gateway, and routing
+- VPC subnet, internet gateway (unless `internet_gateway_id` is set), and routing
 - Security group (egress-only, no inbound ports)
 - S3 VPC endpoint
-- IAM roles and instance profiles
+- IAM role and instance profile (read the source, write `results/` in the bucket, SSM)
 - EC2 instances with cloud-init scripts
 
 On every boot each instance runs `scripts/client.sh`, which:
 - applies the host tuning above; on first boot it sets the CPU isolation boot parameters and reboots once
 - downloads the Rust source from S3 and builds it when the source changed
 
-Wait until `grep HUNT: /var/log/cloud-init-output.log` shows `cmdline: active` (or `the AMI sets its own isolcpus`) before benchmarking.
+Wait until `grep HUNT: /var/log/cloud-init-output.log` shows `cmdline: active` (or `the AMI sets its own isolcpus`) before measuring; this takes about 2 minutes on `c8i.2xlarge`.
 
+### 4. Measure
 
-### 4. Access Instances
-
-Instances are accessed via AWS SSM Session Manager (no SSH keys or open ports needed).
-
-Login to specific instances:
+`scripts/hunt.py run` starts `cex_ws` on every instance via SSM with one shared start time, waits for it, gathers each instance's samples, clock status and metadata under `s3://<bucket>/results/<run-id>/<instance-id>/`, downloads them to `results/<run-id>/` and prints the ranking. Arguments after `--` go to `cex_ws`.
 
 ```bash
-# List instance IDs
-terraform output -json instance_id_and_partition_id_mapping
+# 1. Rank by network-only RTT to every IP behind the endpoints (resolved repeatedly from inside the VPC)
+scripts/hunt.py run probe --hosts ws-fapi.binance.com,fstream.binance.com -- --count 500
 
-# Start a session to a specific instance
-aws ssm start-session --target <instance-id> --region ap-northeast-1
+# 2. Confirm on application round trips over the IP you will use in production, over several connections
+scripts/hunt.py run ws -- <ip> --url wss://ws-fapi.binance.com/ws-fapi/v1 --samples 1200 --connections 6
+
+# 3. Compare market-data arrival: who receives the same stream events first
+scripts/hunt.py run stream -- <stream-ip> --url wss://fstream.binance.com/ws/btcusdt@bookTicker --seconds 60
+
+# Repeat at different times of day, then check that the winner holds across runs
+scripts/hunt.py compare results/<run-1> results/<run-2> results/<run-3>
 ```
 
-Run the Rust program simultaneously on all instances:
-```bash
-TARGET_IP=<target_ip_address>
-WS_URL=wss://<ws-fapi.cex-endpoint.com>/ws-fapi/v1
+Reading the report:
+- **median Δ vs fleet**: for every slot (probe, ws) or event (stream), each instance's value minus the fleet median at that same moment, then the median per instance with a bootstrap 95% confidence interval. Pairing by time cancels load swings on the exchange side, which are often larger than the differences between placements.
+- **verdict**: the winner versus the runner-up on their paired differences. A lead counts only if its confidence interval excludes zero, it is at least `--min-diff-us` (default 5 µs), and for stream runs it exceeds both instances' chrony clock-error bounds.
+- **distribution** and **histogram**: percentiles (shown only with at least 5 samples above them) and one sparkline per instance over shared bins.
+- **per target** (probe): the best instance for each IP; a hostname's IPs can rank instances differently, so pin production connections to the IP you hunted for.
+- `results/<run-id>/combined.csv` holds every sample of every instance for further offline analysis.
 
-# Run on a single instance via SSM session
-sudo nohup taskset -c "$(cat /sys/devices/system/cpu/isolated)" /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP --url $WS_URL > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 &
+A winner is credible when it is significant in each run and stays first across runs taken at different times.
 
-# Or run on all instances at once via SSM send-command
-INSTANCE_IDS=$(terraform output -json instance_id_and_partition_id_mapping | jq -r 'keys[]')
-aws ssm send-command \
-  --targets "Key=instanceids,Values=$(echo $INSTANCE_IDS | tr ' ' ',')" \
-  --document-name "AWS-RunShellScript" \
-  --parameters "commands=['sudo nohup taskset -c \$(cat /sys/devices/system/cpu/isolated) /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP --url $WS_URL > /home/ec2-user/\$(ec2-metadata -i | awk \"{print \\$2}\").log 2>&1 &']" \
-  --region ap-northeast-1
-```
-
-
-### 5. View Results
-
-Check benchmark logs on each instance:
-
-```bash
-# View running log
-tail -f /home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log
-
-# View cloud-init logs
-cat /var/log/cloud-init-output.log
-```
-
-### 6. Keep the Winner
+### 5. Keep the Winner
 
 Find the index of the best instance (`terraform output instances` maps index to instance ID and partition), then keep only it:
 
@@ -170,28 +154,44 @@ To protect the winner's placement:
 - `terraform destroy` removes everything, including the winner.
 - Re-hunt periodically, as exchange endpoints and AWS capacity change over time: remove `keep_instances` and apply to launch fresh instances alongside the winner.
 
-### 7. Destroy Infrastructure
+### 6. Destroy Infrastructure
 
 ```bash
 terraform destroy --auto-approve
 ```
 
-## Benchmark Configuration
+## Measurement Modes
 
-The Rust client (`sources/cex_ws/src/main.rs`) performs:
+All modes share `--start-at <unix-ms>` (a time grid common to all instances; `hunt.py` sets it) and `--out <csv>` (every sample). Sends are scheduled on the grid and spun onto it, so instances hit the exchange together, within their clock-sync error (tens of µs); each sample records its offset from the grid.
 
-1. **Connection**: Opens TCP straight to `<target_ip>` (no DNS), then the TLS and WebSocket handshakes with the hostname from `--url` as SNI and Host; up to 5 attempts with exponential backoff
-2. **Warm-up**: Discards the first 5 responses
-3. **Measurement**: Sends one request every `--interval-ms` (default 1000) and records `--samples` responses (default 600). The app round trip runs from just before the send to the moment the response frame is read, before JSON parsing
-4. **Metrics**: min, max and percentiles of the app round trip and of the kernel's smoothed TCP RTT (`TCP_INFO`, sampled after each response), plus the TCP connect time and retransmit count. The server's ACK rides on its response, so srtt also includes exchange processing time and tracks the app round trip; the TCP connect time (SYN to SYN-ACK) is the network-only figure, measured once per run. A percentile is printed only when at least 5 samples lie above it, so p99.9 needs 5,000+ samples
-5. **Request**: `--request` is a JSON template whose `{id}` is replaced per request and must come back as the response's string `id`; the default is a Binance-style `depth` request for BTCUSDT with 5 levels
+| Mode | Measures | Key options |
+|---|---|---|
+| `probe` | TCP handshake RTT: the kernel's RTT sample from SYN/SYN-ACK (`TCP_INFO`), free of user-space wakeup delay; `connect()` time as fallback. Targets are probed round-robin, one handshake per slot, each on a new connection | `--targets`, `--count` (default 200 per target), `--warmup` (2, discards ARP/route/conntrack setup), `--interval-ms` (25) |
+| `ws` | App round trip on established WebSocket connections: from just before the request write to the moment the response frame is read, before JSON parsing. Also kernel srtt and retransmits | `--url`, `--request` (JSON with `{id}`, which must come back as the response's string `id`; default Binance-style `depth`), `--samples` (600 in total), `--connections` (3, sequential), `--warmup` (5 per connection), `--interval-ms` (100) |
+| `stream` | Wall-clock arrival time of each stream event, compared across instances on the same event key | `--url`, `--subscribe`, `--key` (`u`, Binance bookTicker update ID), `--event-time` (`E`), `--seconds` (30 per connection), `--connections` (2) |
 
+What the numbers mean and where they stop:
+- **Who answers the SYN.** Probe RTT ends wherever TCP terminates. For IPs that are the exchange's own servers or a pass-through load balancer, that is the path to the exchange; for IPs behind a CDN or proxying load balancer (CloudFront, ALB), it only reaches the edge, and the ranking says nothing about the backend.
+- **App round trip includes exchange processing.** On Binance ws-fapi from `c8i.2xlarge` in apne1-az4, the TCP handshake takes ~0.2 ms, the `depth` round trip ~0.9 ms; most of the difference is exchange time, and `depth` is likely answered by a gateway cache rather than the matching engine. The kernel's srtt tracks the app round trip because the exchange piggybacks its ACK on the response, so it is not network-only either.
+- **Several connections.** A target IP can front several gateways; each connection lands on one. `--connections` and the per-connection p50s in the report show whether results depend on the backend rather than on placement.
+- **Stream arrival depends on clock sync.** Instances use Amazon Time Sync through chrony; the report includes each instance's error bound (`|offset| + root delay / 2 + root dispersion`) and treats smaller leads as not significant. Hardware clocks (PHC) and NIC hardware timestamps, which would remove that error and the host stack's noise, need a precision-time placement group, which a partition placement group cannot be combined with.
+- **Not measured: the order path.** Order round trips need signed requests on a funded account and real orders; testnets run on different infrastructure, so they say nothing about placement.
+- **Be gentle with probes.** Each probe opens and closes a TCP connection; with the defaults that is 40 connections per second per instance. Exchanges may rate-limit or block aggressive connection churn.
+
+## What the Placement Group Gives You
+
+A partition placement group keeps up to 7 partitions per AZ on separate sets of racks, so a fleet spread over the partitions samples different racks. It does not guarantee different spines or buildings. To sample more widely:
+- add `unplaced_instance_count` instances outside the group;
+- launch in batches: increase `instance_count` and apply again later, since each launch draws placements from current capacity.
+
+The group also narrows the capacity pool, so launches fail with insufficient capacity (ICE) more often, especially for metal sizes.
 
 ## Outputs
 
-- `instance_public_ip_client_ppg`: Public IPs of all instances
-- `instance_id_and_partition_id_mapping`: Instance-to-partition mapping
-- `instances`: Instance index (used by `keep_instances`) to instance ID and partition
+- `instances`: instance index (used by `keep_instances`) to instance ID, partition and whether it is in the placement group
+- `instance_public_ip_client_ppg`: public IPs of all instances
+- `instance_id_and_partition_id_mapping`: instance-to-partition mapping
+- `s3_bucket`, `aws_region`: read by `scripts/hunt.py`
 
 ## Troubleshooting
 
@@ -199,12 +199,6 @@ The Rust client (`sources/cex_ws/src/main.rs`) performs:
 
 ```bash
 cat /var/log/cloud-init-output.log
-```
-
-### Check Running Process
-
-```bash
-ps aux | grep cex_ws
 ```
 
 ### Verify CPU Configuration
@@ -220,30 +214,46 @@ cat /sys/devices/system/cpu/isolated /proc/cmdline
 cat /proc/interrupts
 ```
 
+### Run cex_ws by Hand
+
+```bash
+aws ssm start-session --target <instance-id> --region ap-northeast-1
+sudo taskset -c "$(cat /sys/devices/system/cpu/isolated)" /share/bench/sources/cex_ws/target/release/cex_ws probe --targets <ip> --count 50
+```
+
+`hunt.py` leaves each run's files under `/home/ec2-user/results/<run-id>/` on the instances; `summary.txt` has the exit status.
+
+## Development
+
+```bash
+terraform test                      # offline Terraform checks with a mock AWS provider (needs sources/source.tar.gz)
+python3 -m unittest tests/test_hunt.py
+cd sources/cex_ws && cargo test
+```
+
 ## Project Structure
 
 ```
 .
 ├── main.tf                    # Main Terraform configuration
-├── moved.tf                   # State address migration for instances
+├── moved.tf                   # State address migrations
 ├── variables.tf               # Variable definitions
 ├── providers.tf               # AWS provider configuration
 ├── terraform.tfvars.example   # Example variable values
-├── pack_source.sh             # Script to package Rust source
-├── tests/
-│   └── hunt.tftest.hcl        # Offline `terraform test` checks (mock AWS)
+├── pack_source.sh             # Packages the Rust source
 ├── scripts/
-│   ├── client.sh              # EC2 initialization script
-│   └── cloud-config.yaml      # Cloud-init configuration
+│   ├── client.sh              # EC2 boot script: host tuning and client build
+│   ├── cloud-config.yaml      # Cloud-init configuration
+│   └── hunt.py                # Synchronized runs, result collection and ranking
+├── tests/
+│   ├── hunt.tftest.hcl        # Offline `terraform test` checks (mock AWS)
+│   └── test_hunt.py           # Ranking and significance checks for hunt.py
 └── sources/
-    └── cex_ws/            # Rust WebSocket client
-        ├── Cargo.toml
+    └── cex_ws/                # Rust measurement client
         └── src/
-            └── main.rs        # Main benchmark logic
+            ├── main.rs        # CLI: probe, ws, stream
+            ├── common.rs      # Time grid, stats, CSV, TCP_INFO
+            ├── probe.rs       # TCP handshake RTT
+            ├── ws.rs          # WebSocket round trips
+            └── stream.rs      # Stream event arrival
 ```
-
-## Notes
-
-- Benchmark does not auto-run; you need to manually start it via SSM (see step 4)
-- Results are logged to `/home/ec2-user/<instance-id>.log`
-- Process exits after `--samples` responses (default 600, ~10 minutes at the default interval)
