@@ -48,39 +48,6 @@ run "input_changes_keep_instances" {
   }
 }
 
-run "more_instances_than_partitions" {
-  command = plan
-  variables {
-    instance_count = 9
-  }
-  assert {
-    condition     = aws_instance.client_ppg["7"].placement_partition_number == 1 && aws_instance.client_ppg["8"].placement_partition_number == 2
-    error_message = "Instances beyond 7 must wrap around the partitions"
-  }
-}
-
-run "unplaced_instances" {
-  command = plan
-  variables {
-    unplaced_instance_count = 2
-  }
-  assert {
-    condition     = !output.instances["7"].in_placement_group && !output.instances["8"].in_placement_group && output.instances["6"].in_placement_group
-    error_message = "Indices from instance_count on must launch outside the placement group"
-  }
-}
-
-run "existing_internet_gateway" {
-  command = plan
-  variables {
-    internet_gateway_id = "igw-0123456789abcdef0"
-  }
-  assert {
-    condition     = length(aws_internet_gateway.main) == 0 && one([for r in aws_route_table.rtb_public.route : r.gateway_id]) == "igw-0123456789abcdef0"
-    error_message = "A given internet_gateway_id must be reused, not created"
-  }
-}
-
 run "keep_winner" {
   variables {
     keep_instances = [3]

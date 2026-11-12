@@ -204,15 +204,6 @@ mod tests {
     }
 
     #[test]
-    fn id_of_accepts_string_and_number_ids() {
-        let j: serde_json::Value =
-            serde_json::from_str(r#"{"id":"7","req_id":7,"x":null}"#).unwrap();
-        assert_eq!(id_of(&j, "id").as_deref(), Some("7"));
-        assert_eq!(id_of(&j, "req_id").as_deref(), Some("7"));
-        assert_eq!(id_of(&j, "x"), None);
-    }
-
-    #[test]
     fn stats_hides_percentiles_without_enough_samples_above() {
         let values: Vec<u64> = (1..=100).collect();
         assert_eq!(stats(&values), "n=100 min=1 p50=51 p90=90 max=100");

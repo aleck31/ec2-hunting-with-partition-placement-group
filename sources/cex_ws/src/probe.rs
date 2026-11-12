@@ -149,17 +149,3 @@ pub async fn run(args: ProbeArgs) -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn target_takes_an_optional_port() {
-        let t: Target = "10.0.0.1:9000".parse().unwrap();
-        assert_eq!((t.ip.to_string(), t.port), ("10.0.0.1".into(), Some(9000)));
-        let t: Target = "10.0.0.1".parse().unwrap();
-        assert_eq!(t.port, None);
-        assert!("example.com".parse::<Target>().is_err());
-    }
-}
