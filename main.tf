@@ -187,7 +187,7 @@ data "cloudinit_config" "cloudinit_client" {
 }
 
 locals {
-  instance_indices = var.keep_instances != null ? var.keep_instances : range(var.instance_count)
+  instance_indices = var.keep_instances != null ? var.keep_instances : range(var.instance_count + var.unplaced_instance_count)
 }
 
 data "aws_ec2_instance_type" "selected" {
@@ -207,8 +207,9 @@ resource "aws_instance" "client_ppg" {
   associate_public_ip_address          = true
   hibernation                          = false
   instance_initiated_shutdown_behavior = "terminate"
-  placement_group                      = aws_placement_group.partition.name
-  placement_partition_number           = tonumber(each.key) % aws_placement_group.partition.partition_count + 1
+  # Indices from instance_count on launch outside the placement group, sampling hosts beyond its racks
+  placement_group            = tonumber(each.key) < var.instance_count ? aws_placement_group.partition.name : null
+  placement_partition_number = tonumber(each.key) < var.instance_count ? tonumber(each.key) % aws_placement_group.partition.partition_count + 1 : null
 
   # Hyper-threading off; without core_count the provider drops threads_per_core and launches with SMT on
   cpu_options {
@@ -218,11 +219,11 @@ resource "aws_instance" "client_ppg" {
 
   # Changing any of these relaunches or stop/starts the instance, which loses the hunted placement
   lifecycle {
-    ignore_changes = [ami, user_data, instance_type, cpu_options]
+    ignore_changes = [ami, user_data, instance_type, cpu_options, placement_group, placement_partition_number]
   }
 
   tags = {
-    Name = "client-ppg-${each.key}"
+    Name = tonumber(each.key) < var.instance_count ? "client-ppg-${each.key}" : "client-nopg-${each.key}"
   }
 }
 
@@ -231,11 +232,12 @@ output "instance_public_ip_client_ppg" {
 }
 
 output "instances" {
-  description = "Instance index (as used by keep_instances) => instance ID and partition"
+  description = "Instance index (as used by keep_instances) => instance ID and partition (0 outside the placement group)"
   value = {
     for idx, instance in aws_instance.client_ppg : idx => {
-      id        = instance.id
-      partition = instance.placement_partition_number
+      id                 = instance.id
+      partition          = instance.placement_partition_number
+      in_placement_group = tonumber(idx) < var.instance_count
     }
   }
 }

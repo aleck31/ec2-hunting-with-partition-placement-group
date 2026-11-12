@@ -59,6 +59,17 @@ run "more_instances_than_partitions" {
   }
 }
 
+run "unplaced_instances" {
+  command = plan
+  variables {
+    unplaced_instance_count = 2
+  }
+  assert {
+    condition     = !output.instances["7"].in_placement_group && !output.instances["8"].in_placement_group && output.instances["6"].in_placement_group
+    error_message = "Indices from instance_count on must launch outside the placement group"
+  }
+}
+
 run "existing_internet_gateway" {
   command = plan
   variables {

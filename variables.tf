@@ -37,6 +37,12 @@ variable "instance_count" {
   }
 }
 
+variable "unplaced_instance_count" {
+  description = "Extra instances launched outside the placement group (same subnet), to sample hosts beyond the partition racks"
+  type        = number
+  default     = 0
+}
+
 variable "internet_gateway_id" {
   description = "Existing Internet Gateway of the VPC to route through; null creates one (fails if the VPC already has one)"
   type        = string
