@@ -96,5 +96,15 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(roles, {"10.0.0.1:443": "order", "10.0.0.1:9000": "order", "10.0.0.2:443": "order"})
 
 
+class DrawsTest(unittest.TestCase):
+    def test_instances_in_one_partition_count_as_one_draw(self):
+        run = {"insts": [{"partition": p} for p in ("1", "1", "2", "-")]}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            hunt.report_draws(run)
+        self.assertIn("placement draws: 3 (2 partitions + 1 outside the group", out.getvalue())
+        self.assertIn("(29 draws for 95%)", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

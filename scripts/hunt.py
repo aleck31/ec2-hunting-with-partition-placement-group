@@ -17,6 +17,7 @@ import argparse
 import csv
 import ipaddress
 import json
+import math
 import random
 import re
 import shlex
@@ -98,7 +99,7 @@ def instance_script(run_id: str, bucket: str, region: str, mode: str, cex_args: 
         "T=$(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 600')",
         'md() { curl -sf -H "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/meta-data/$1 || true; }',
         "IID=$(md instance-id)",
-        """printf '{"instance_id":"%s","instance_type":"%s","az_id":"%s","partition":"%s"}\\n' "$IID" "$(md instance-type)" "$(md placement/availability-zone-id)" "$(md placement/partition-number)" > meta.json""",
+        """printf '{"instance_id":"%s","instance_type":"%s","ami_id":"%s","kernel":"%s","az_id":"%s","partition":"%s"}\\n' "$IID" "$(md instance-type)" "$(md ami-id)" "$(uname -r)" "$(md placement/availability-zone-id)" "$(md placement/partition-number)" > meta.json""",
         "chronyc tracking > chrony-before.txt 2>&1 || true",
         'CPUS=$(cat /sys/devices/system/cpu/isolated); [ -n "$CPUS" ] || { CPUS=0-$(($(getconf _NPROCESSORS_ONLN) - 1)); echo "WARNING: no isolated CPUs" >> summary.txt; }',
         f'taskset -c "$CPUS" {BIN} {args} >> summary.txt 2>&1; echo "exit=$?" >> summary.txt',
@@ -189,7 +190,7 @@ def cmd_run(a) -> None:
     outs = {k: v["value"] for k, v in json.loads(sh("terraform", f"-chdir={a.tf_dir}", "output", "-json")).items()}
     region, bucket, instances = outs["aws_region"], outs["s3_bucket"], outs["instances"]
     ids = [instances[k]["id"] for k in sorted(instances, key=int)]
-    cex_args, hosts, labels, roles, mode = list(a.cex_args), {}, {}, {}, a.mode
+    cex_args, hosts, resolved, labels, roles, mode = list(a.cex_args), {}, {}, {}, {}, a.mode
     profile = load_profile(a.profile) if a.profile else None
     endpoints = profile["endpoints"] if profile else []
     if a.endpoint:
@@ -204,7 +205,8 @@ def cmd_run(a) -> None:
 
     if mode == "probe" and (endpoints or a.hosts):
         names = sorted({host_port(ep)[0] for ep in endpoints} | set(a.hosts.split(",") if a.hosts else []))
-        hosts = sample_hosts(resolve(region, ids[0], names, a.resolve_rounds), a.max_targets_per_host)
+        resolved = resolve(region, ids[0], names, a.resolve_rounds)
+        hosts = sample_hosts(resolved, a.max_targets_per_host)
         adhoc = [{"name": h, "protocol": "tcp", "host": h, "port": 443} for h in (a.hosts.split(",") if a.hosts else [])]
         targets, labels, roles = probe_targets(endpoints + adhoc, hosts)
         if not targets:
@@ -235,10 +237,13 @@ def cmd_run(a) -> None:
     local = Path(a.results_dir) / run_id
     sh("aws", "--region", region, "s3", "cp", "--only-show-errors", "--recursive", f"s3://{bucket}/results/{run_id}/", str(local))
     meta = {"mode": mode, "profile": profile and profile.get("name"), "endpoint": a.endpoint, "start_at": start_at,
-            "cex_args": cex_args, "hosts": hosts, "target_labels": labels, "target_roles": roles,
-            "weights": (profile or {}).get("weights", {}), "instances": instances}
+            "cex_args": cex_args, "hosts": hosts, "resolved_counts": {h: len(v) for h, v in resolved.items()},
+            "target_labels": labels, "target_roles": roles,
+            "weights": (profile or {}).get("weights", {}), "instances": instances, "profile_config": profile}
     (local / "run.json").write_text(json.dumps(meta, indent=2))
     print(f"\nResults in {local}\n")
+    if mode == "probe":
+        save_history(local, meta, run_id, region, bucket)
     compare([local])
 
 
@@ -269,7 +274,7 @@ def load_run(run_dir: Path) -> dict:
             rows = list(csv.DictReader(f))
         iid = meta["instance_id"]
         insts.append({"name": f"{index.get(iid, '?')}:{iid}", "id": iid, "partition": meta.get("partition") or "-",
-                      "rows": rows, "clock_us": clock_error_us(d)})
+                      "rows": rows, "clock_us": clock_error_us(d), "meta": meta})
     header = set(insts[0]["rows"][0]) if insts and insts[0]["rows"] else set()
     mode = ("probe" if "syn_rtt_us" in header else "http" if "http_status" in header else "ws" if "rtt_us" in header
             else "stream" if "recv_wall_us" in header else run.get("mode"))
@@ -463,6 +468,7 @@ def report(run: dict, min_diff_us: float = 5.0, weights: dict = None) -> list:
     if mode == "probe":
         per_target(run)
         report_roles(run, weights or run["weights"], min_diff_us)
+        report_draws(run)
     if mode in ("ws", "http"):
         for r in ranked:
             by_conn = {}
@@ -475,15 +481,20 @@ def report(run: dict, min_diff_us: float = 5.0, weights: dict = None) -> list:
     return [r["inst"]["id"] for r in ranked]
 
 
+def target_values(inst: dict) -> dict:
+    """Probe: {target: measured RTTs µs} of one instance."""
+    out = {}
+    for r in inst["rows"]:
+        if r["status"] == "ok" and r["warmup"] == "0":
+            out.setdefault(r["target"], []).append(float(r["syn_rtt_us"]) or float(r["connect_us"]))
+    return out
+
+
 def per_target(run: dict) -> None:
     """Best instance per target IP by p50; rankings can differ between the IPs behind one hostname."""
     p50 = {}
     for inst in run["insts"]:
-        by_target = {}
-        for r in inst["rows"]:
-            if r["status"] == "ok" and r["warmup"] == "0":
-                by_target.setdefault(r["target"], []).append(float(r["syn_rtt_us"]) or float(r["connect_us"]))
-        for t, vals in by_target.items():
+        for t, vals in target_values(inst).items():
             p50.setdefault(t, {})[inst["name"]] = statistics.median(vals)
     wins = {}
     print("  per target (p50 µs): target, endpoint, best instance, best, runner-up")
@@ -494,6 +505,59 @@ def per_target(run: dict) -> None:
         label = run["host_of"].get(t) or run["host_of"].get(t.partition(":")[0], "-")
         print(f"    {t:<22} {label:<24} {order[0][0]:<24} {order[0][1]:>6.0f} {second:>6}")
     print("  targets won: " + ", ".join(f"{n}={c}" for n, c in sorted(wins.items(), key=lambda kv: -kv[1])))
+
+
+def draws(n: int, q: float, conf: float = 0.95) -> tuple:
+    """Chance that the best of n independent placement draws is among the AZ's best q of hosts, and the draws that reach conf."""
+    return 1 - (1 - q) ** n, math.ceil(math.log(1 - conf) / math.log(1 - q))
+
+
+def report_draws(run: dict) -> None:
+    parts = {i["partition"] for i in run["insts"] if i["partition"] != "-"}
+    outside = sum(i["partition"] == "-" for i in run["insts"])
+    n = len(parts) + outside
+    if n:
+        (p10, n10), (p20, n20) = draws(n, 0.1), draws(n, 0.2)
+        print(f"  placement draws: {n} ({len(parts)} partitions + {outside} outside the group; instances in one partition share racks and count once). "
+              f"If draws were independent, the winner is among the best 10% of the hosts this type and group can get in the AZ with {p10:.0%} probability ({n10} draws for 95%), "
+              f"best 20% with {p20:.0%} ({n20} for 95%)")
+
+
+def history_records(run: dict, meta: dict, run_id: str) -> list:
+    """A run header, then absolute SYN RTT stats per instance and target, with the fields to filter history by later."""
+    index = {v["id"]: k for k, v in meta.get("instances", {}).items()}
+    metas = [i["meta"] for i in run["insts"]]
+    base = {"run_id": run_id, "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta["start_at"] / 1000)),
+            "profile": meta.get("profile") or "adhoc", "az_id": next((m["az_id"] for m in metas if m.get("az_id")), None)}
+    targets = sorted({r["target"] for i in run["insts"] for r in i["rows"]}, key=target_key)
+    label = lambda t: run["host_of"].get(t) or run["host_of"].get(t.partition(":")[0])
+    # Hosts with many rotating IPs are sampled (seeded by the host name), so runs probe different IPs of them
+    sampled = [{"host": h, "resolved": meta.get("resolved_counts", {}).get(h), "sampled": len(v), "seed": h} for h, v in meta.get("hosts", {}).items()]
+    out = [{"record": "run", **base, "profile_config": meta.get("profile_config"), "cex_args": meta.get("cex_args"), "hosts": sampled,
+            "targets": [{"target": t, "endpoint": label(t), "role": run["roles"].get(t)} for t in targets]}]
+    for inst in run["insts"]:
+        m, idx = inst["meta"], index.get(inst["id"])
+        host = {"instance_id": inst["id"], "index": idx, "instance_type": m.get("instance_type"), "ami_id": m.get("ami_id"),
+                "kernel": m.get("kernel"), "partition": m.get("partition") or None,
+                "in_placement_group": meta.get("instances", {}).get(idx, {}).get("in_placement_group")}
+        for t, vals in sorted(target_values(inst).items(), key=lambda kv: target_key(kv[0])):
+            q = statistics.quantiles(vals, n=10, method="inclusive") if len(vals) > 1 else vals * 9
+            out.append({"record": "sample", **base, **host, "target": t, "endpoint": label(t), "role": run["roles"].get(t),
+                        "n": len(vals), "min_us": min(vals), "p10_us": q[0], "p50_us": q[4], "p90_us": q[8]})
+    return out
+
+
+def save_history(local: Path, meta: dict, run_id: str, region: str, bucket: str) -> None:
+    """Keep every probe run's stats, locally and in s3://<bucket>/history/<profile>/<az-id>/, to judge winners against earlier runs."""
+    records = history_records(load_run(local), meta, run_id)
+    path = local / "history.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    key = f"history/{records[0]['profile']}/{records[0]['az_id'] or 'unknown-az'}/{run_id}.jsonl"
+    try:
+        sh("aws", "--region", region, "s3", "cp", "--only-show-errors", str(path), f"s3://{bucket}/{key}")
+        print(f"History: s3://{bucket}/{key}\n")
+    except subprocess.CalledProcessError as e:
+        print(f"WARNING: history upload failed ({e}); kept in {path}\n")
 
 
 def export(run: dict) -> None:

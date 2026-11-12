@@ -54,7 +54,7 @@ scripts/hunt.py run --profile $P --endpoint ws-api --ip <ip>       # confirm on 
 scripts/hunt.py compare results/<run-1> results/<run-2>            # repeat at other times; the winner should hold
 ```
 
-Each run starts `cex_latency` on every instance via SSM, collects the samples through S3 into `results/<run-id>/` and prints the ranking, ending with a suggested `keep_instances`. Endpoints come from a [target profile](docs/target-profiles.md). [docs/measurement.md](docs/measurement.md) covers the modes, how to read the report, how many samples to take and the exchange's rate limits.
+Each run starts `cex_latency` on every instance via SSM, collects the samples through S3 into `results/<run-id>/` and prints the ranking, ending with a suggested `keep_instances`. Endpoints come from a [target profile](docs/target-profiles.md). [docs/measurement.md](docs/measurement.md) covers the modes, how to read the report, how many samples to take, the probe history kept in S3 and the exchange's rate limits.
 
 ### 4. Keep the winner, or keep and hunt another batch
 
@@ -65,7 +65,7 @@ keep_instances = [3]      # keep the winner, terminate the rest
 index_offset   = 7        # optional: also launch a new batch from index 7, next to the kept instance
 ```
 
-A new batch takes the next indices, continues round-robin over the partitions and is ranked with the kept instances on the next run. `index_offset` must be above every kept index; Terraform refuses the plan otherwise. Repeat (keep the best, raise `index_offset`) until the winner is good enough.
+A new batch takes the next indices, continues round-robin over the partitions and is ranked with the kept instances on the next run. `index_offset` must be above every kept index; Terraform refuses the plan otherwise. Repeat (keep the best, raise `index_offset`) until the winner is good enough; see [Is the winner a good host?](docs/measurement.md#is-the-winner-a-good-host).
 
 - Only reboot a kept instance; stop/start, a new type, size, CPU options or user data moves it to another host.
 - Re-applying never replaces existing instances: changes to `instance_type`, `ami_id` or `scripts/` only reach new ones. To update the client on running instances, run `sh pack_source.sh` and `terraform apply`, then reboot them. To hunt with another type or AMI, start a new fleet.

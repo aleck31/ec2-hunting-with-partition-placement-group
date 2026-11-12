@@ -39,6 +39,13 @@ A winner is credible when it is significant in each run and stays first across r
 
 The CI half-width shrinks with the square root of the sample count. In the Binance run (paired differences with a standard deviation of ~140 µs) it was ±19 µs at 100 paired samples, ±11 µs at 300, ±6 µs at 1,000 and ±3.5 µs at 3,000. Resolving a 10 µs lead needs about ±5 µs: some 1,500 paired samples for the ranking, counted over all IPs together (e.g. 30 IPs × 50). Choosing the IP to pin needs ~300 per IP for ±10 µs. Repeating at other times says more than one longer run.
 
+## Is the winner a good host?
+
+A run ranks the fleet; how the winner compares with the rest of the AZ needs two more things.
+
+- **Placement draws.** Probe reports count the fleet's draws as its partitions plus its instances outside the group, since instances in one partition share racks. If draws were independent, the best of N is among the best fraction q of hosts with probability 1 − (1 − q)^N, where the hosts are those this instance type in this placement group can land on in the AZ, not the whole AZ: 7 draws reach the best 10% with 52%, and 95% takes 29 draws (14 for the best 20%). A new batch in the same group lands in the same 7 partitions; it may reach other racks there, which the count doesn't credit, while its instances outside the group each add a draw.
+- **History.** Every probe run writes the SYN RTT's n, min, p10, p50 and p90 per instance and target to `s3://<bucket>/history/<profile>/<az-id>/<run-id>.jsonl` (and `results/<run-id>/history.jsonl`), after a header line with the run's targets, their endpoints and roles, how many IPs each host resolved to and how many were sampled (seeded by the host name), and the profile. Each row carries the UTC time, instance type, AMI, kernel, AZ ID, partition and placement group membership. The ranking doesn't use it; it is there to place a winner among earlier runs, filtered to a recent time window and the same instance type, since endpoints and the exchange's backends drift. Compare per target where the IPs are stable (Binance ws-fapi: 4); a host with hundreds of rotating IPs (fstream) gets a different sample each run, so compare per role, by the median of the p50s over the role's IPs.
+
 ## Targets and limits
 
 `hunt.py` resolves hostnames on an instance, through the VPC resolver and the zone's authoritative name servers: answers depend on where the query comes from (outside AWS, `fapi.binance.com` may resolve to CloudFront), rotate, and are cached by the VPC resolver for the TTL. Hosts with many IPs (Binance `fstream`: ~470) are sampled to `--max-targets-per-host` (16), and probe runs estimated to exceed `--max-minutes` (10) are refused.
