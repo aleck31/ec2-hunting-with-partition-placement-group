@@ -7,7 +7,7 @@
   scripts/hunt.py run ws -- 16.76.26.173 --url wss://ws-fapi.binance.com/ws-fapi/v1 --connections 5
   scripts/hunt.py compare results/<run-id> [results/<run-id> ...]
 
-A profile (targets/*.toml) describes an exchange's endpoints and how to measure each; see README. Arguments after
+A profile (targets/*.toml) describes an exchange's endpoints and how to measure each; see docs/target-profiles.md. Arguments after
 "--" go to cex_ws unchanged. Run from the repo root (it reads `terraform output`); needs the AWS CLI with credentials
 for the account and Python 3.11+. Ranking compares instances slot by slot against the fleet median, so load swings on the exchange side cancel
 out; stream runs are reported but not ranked, since instance clocks only agree to ~100 µs.
