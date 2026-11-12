@@ -3,10 +3,17 @@
 # sample them; ws-fapi has 4.
 name = "binance-usdm"
 
+# Weights of the roles in the combined score for one host doing order entry and market data; e.g. a taker may weigh
+# order entry higher, a market maker market data. Override with `hunt.py compare --weights order=0.7,md=0.3`.
+[weights]
+order = 0.5
+md = 0.5
+
 # WebSocket API, the order gateway. Order methods need signed requests, so this measures a public method on it.
 [[endpoints]]
 name = "ws-api"
 protocol = "ws"
+role = "order"
 url = "wss://ws-fapi.binance.com/ws-fapi/v1"
 request = '{"id":"{id}","method":"depth","params":{"symbol":"BTCUSDT","limit":5}}'
 id_field = "id"
@@ -15,6 +22,7 @@ id_field = "id"
 [[endpoints]]
 name = "market-stream"
 protocol = "stream"
+role = "md"
 url = "wss://fstream.binance.com/ws/btcusdt@bookTicker"
 key_field = "u"
 event_time_field = "E"
@@ -24,6 +32,7 @@ event_time_field = "E"
 [[endpoints]]
 name = "rest"
 protocol = "http"
+role = "order"
 url = "https://fapi.binance.com/fapi/v1/time"
 
 # Plain TCP endpoints (e.g. a FIX gateway) are probed for handshake RTT only:

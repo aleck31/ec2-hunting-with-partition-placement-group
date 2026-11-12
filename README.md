@@ -121,7 +121,7 @@ scripts/hunt.py run --profile $P -- --count 200 --interval-ms 50
 scripts/hunt.py run --profile $P --endpoint ws-api --ip <ip> -- --samples 1200 --connections 6
 scripts/hunt.py run --profile $P --endpoint rest --ip <ip>
 
-# 3. Compare market-data arrival: who receives the same stream events first
+# 3. Record the market-data stream on every host (reported, not ranked; see the clock rule below)
 scripts/hunt.py run --profile $P --endpoint market-stream -- --seconds 60
 
 # Repeat at different times of day, then check that the winner holds across runs
@@ -134,12 +134,15 @@ Hostnames are resolved on an instance, both through the VPC resolver and by aski
 
 Reading the report:
 - **median Δ vs fleet**: for every slot (probe, ws) or event (stream), each instance's value minus the fleet median at that same moment, then the median per instance with a bootstrap 95% confidence interval. Pairing by time cancels load swings on the exchange side, which are often larger than the differences between placements.
-- **verdict**: the winner versus the runner-up on their paired differences. A lead counts only if its confidence interval excludes zero, it is at least `--min-diff-us` (default 5 µs), and for stream runs it exceeds both instances' chrony clock-error bounds.
+- **verdict**: the winner versus the runner-up on their paired differences. A lead counts only if its confidence interval excludes zero and it is at least `--min-diff-us` (default 5 µs). An unresolved lead comes with the number of paired samples that would resolve it.
 - **distribution** and **histogram**: percentiles (shown only with at least 5 samples above them) and one sparkline per instance over shared bins.
 - **per target** (probe): the best instance for each IP; a hostname's IPs can rank instances differently, so pin production connections to the IP you hunted for.
+- **per role** (probe with a profile): separate rankings for order entry (`order`) and market data (`md`) targets, their rank correlation (near +1: the same hosts are close to both), a score weighted by the profile's `[weights]` (or `compare --weights order=0.7,md=0.3`), and the suggested `keep_instances` for one host that does both.
 - `results/<run-id>/combined.csv` holds every sample of every instance for further offline analysis.
 
 A winner is credible when it is significant in each run and stays first across runs taken at different times.
+
+**How many samples.** The confidence interval's half-width shrinks with the square root of the sample count. In a Binance run on `c8i.2xlarge` (paired differences between two instances with a standard deviation of ~140 µs) it was ±19 µs at 100 paired samples, ±11 µs at 300, ±6 µs at 1,000 and ±3.5 µs at 3,000. Placements differed by 10–15 µs, which needs a half-width of about ±5 µs: some 1,500 paired samples for the instance ranking, counted over all target IPs together (e.g. 30 IPs × 50). Choosing which IP to pin needs per-IP samples; ~300 per IP resolves ±10 µs. Repeating a run at other times of day says more about a placement than one longer run.
 
 ### 5. Keep the Winner
 
@@ -177,15 +180,15 @@ All modes share `--start-at <unix-ms>` (a time grid common to all instances; `hu
 | `probe` | TCP handshake RTT: the kernel's RTT sample from SYN/SYN-ACK (`TCP_INFO`), free of user-space wakeup delay; `connect()` time as fallback. Targets are probed round-robin, one handshake per slot, each on a new connection. Works for any TCP service (HTTPS, WebSocket, FIX) | `--targets` (`IP` or `IP:port`, `--port` default 443), `--count` (default 200 per target), `--warmup` (2, discards ARP/route/conntrack setup), `--interval-ms` (25) |
 | `ws` | App round trip on established WebSocket connections: from just before the request write to the moment the response frame is read, before JSON parsing. Also kernel srtt and retransmits | `--url`, `--request` (JSON with `{id}`, replaced by the slot number; default Binance-style `depth`), `--id-field` (top-level response field echoing it, string or number; `id`), `--samples` (600 in total), `--connections` (3, sequential), `--warmup` (5 per connection), `--interval-ms` (100) |
 | `http` | HTTP request round trip on keep-alive connections: from the request write to the parsed response head. TCP goes straight to the target IP; TLS SNI and `Host` come from the URL | `--url`, `--method` (GET), `--body` (with `{id}`), `--header` (repeatable), `--samples`, `--connections`, `--warmup`, `--interval-ms` as for `ws` |
-| `stream` | Wall-clock arrival time of each stream event, compared across instances on the same event key | `--url`, `--subscribe`, `--key` (`u`, Binance bookTicker update ID), `--event-time` (`E`), `--seconds` (30 per connection), `--connections` (2) |
+| `stream` | Wall-clock arrival time of each stream event, with the exchange's event time for a millisecond-level sanity check; reported per instance, not ranked (see the clock rule below) | `--url`, `--subscribe`, `--key` (`u`, Binance bookTicker update ID), `--event-time` (`E`), `--seconds` (30 per connection), `--connections` (2) |
 
 What the numbers mean and where they stop:
 - **Who answers the SYN.** Probe RTT ends wherever TCP terminates. For IPs that are the exchange's own servers or a pass-through load balancer, that is the path to the exchange; for IPs behind a CDN or proxying load balancer (CloudFront, ALB), it only reaches the edge, and the ranking says nothing about the backend.
 - **App round trip includes exchange processing.** On Binance ws-fapi from `c8i.2xlarge` in apne1-az4, the TCP handshake takes ~0.2 ms, the `depth` round trip ~0.9 ms; most of the difference is exchange time, and `depth` is likely answered by a gateway cache rather than the matching engine. The kernel's srtt tracks the app round trip because the exchange piggybacks its ACK on the response, so it is not network-only either.
 - **Several connections.** A target IP can front several gateways; each connection lands on one. `--connections` and the per-connection p50s in the report show whether results depend on the backend rather than on placement.
-- **Stream arrival depends on clock sync.** Instances use Amazon Time Sync through chrony; the report includes each instance's error bound (`|offset| + root delay / 2 + root dispersion`) and treats smaller leads as not significant. Hardware clocks (PHC) and NIC hardware timestamps, which would remove that error and the host stack's noise, need a precision-time placement group, which a partition placement group cannot be combined with.
+- **Clock rule: rank only on same-machine time differences.** All instances start together on wall-clock time, synced by the basic Amazon Time Sync Service (`169.254.169.123`; chrony error bounds of 70–90 µs were measured, and `client.sh` logs the source and error terms at every boot). That aligns sending slots well enough, but not arrival times compared across machines, where placements differ by less than the clock error. So probe, ws and http rank on round trips timed on one machine, and stream runs are reported without a ranking; distance to the market-data servers comes from the probe RTT to their IPs (role `md`). Hardware clocks (PHC) and NIC hardware timestamps would remove the clock error and the host stack's noise, but need a precision-time placement group, which a partition placement group cannot be combined with.
 - **Not measured: the order path.** Order round trips need signed requests on a funded account and real orders; testnets run on different infrastructure, so they say nothing about placement.
-- **Be gentle with probes.** Each probe opens and closes a TCP connection; with the defaults that is 40 connections per second per instance (`--interval-ms 50` halves it). Exchanges may rate-limit or block aggressive connection churn; `--max-targets-per-host` and `--max-minutes` keep runs bounded.
+- **Exchange etiquette.** Use documented endpoints and ports only, and stay within the exchange's published limits per source IP (each instance has its own). Binance USDⓈ-M futures, for example: REST and WebSocket API share a request-weight budget of 2,400 per minute per IP, each WebSocket handshake costs 5, a `depth` request with `limit` 5 costs 2, so the default `ws` run (one request per 100 ms) uses about half of it; market-stream connections accept at most 10 incoming messages per second, and IPs repeatedly disconnected for exceeding limits may be banned. Exchanges don't publish limits for bare TCP handshakes, so keep probes gentle: the defaults open 40 connections per second per instance (`--interval-ms 50` halves it), and `--max-targets-per-host` and `--max-minutes` keep runs bounded.
 
 ## Target Profiles
 
@@ -222,7 +225,7 @@ host = "fix.example.com"
 port = 9000
 ```
 
-Every endpoint may also set `args = [...]`, extra `cex_ws` options for that endpoint. `hunt.py run --profile P` probes the TCP handshake to the IPs of all endpoints (each on its own port, labelled by endpoint in the report); `--endpoint NAME` runs that endpoint's own protocol. Before adding an exchange, check that its endpoints are not behind a CDN (see [who answers the SYN](#measurement-modes)) and that the request methods are public.
+Every endpoint may also set `role` (`order` or `md`; default `md` for streams, `order` otherwise) and `args = [...]`, extra `cex_ws` options for that endpoint. A top-level `[weights]` table (`order = 0.5`, `md = 0.5`) sets the roles' weights in the combined score. `hunt.py run --profile P` probes the TCP handshake to the IPs of all endpoints (each on its own port, labelled by endpoint in the report); `--endpoint NAME` runs that endpoint's own protocol. Before adding an exchange, check that its endpoints are not behind a CDN (see [who answers the SYN](#measurement-modes)) and that the request methods are public.
 
 ## What the Placement Group Gives You
 

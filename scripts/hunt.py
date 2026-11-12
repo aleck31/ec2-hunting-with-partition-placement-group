@@ -9,8 +9,8 @@
 
 A profile (targets/*.toml) describes an exchange's endpoints and how to measure each; see README. Arguments after
 "--" go to cex_ws unchanged. Run from the repo root (it reads `terraform output`); needs the AWS CLI with credentials
-for the account and Python 3.11+. Ranking compares instances slot by slot (probe, ws) or event by
-event (stream) against the fleet median, so load swings on the exchange side cancel out.
+for the account and Python 3.11+. Ranking compares instances slot by slot against the fleet median, so load swings on the exchange side cancel
+out; stream runs are reported but not ranked, since instance clocks only agree to ~100 µs.
 """
 
 import argparse
@@ -142,15 +142,21 @@ def endpoint_args(ep: dict) -> list:
     return args + list(ep.get("args", []))
 
 
+def role_of(ep: dict) -> str:
+    """What the endpoint is for: "md" (market data) for streams, "order" (order entry) otherwise, unless set."""
+    return ep.get("role") or ("md" if ep["protocol"] == "stream" else "order")
+
+
 def probe_targets(endpoints: list, resolved: dict) -> tuple:
-    """Every IP:port behind the endpoints, and a label per target naming its endpoints."""
-    labels = {}
+    """Every IP:port behind the endpoints, a label naming its endpoints and the roles it serves."""
+    labels, roles = {}, {}
     for ep in endpoints:
         host, port = host_port(ep)
         for ip in resolved.get(host, []):
             labels.setdefault(f"{ip}:{port}", []).append(ep["name"])
+            roles.setdefault(f"{ip}:{port}", set()).add(role_of(ep))
     targets = sorted(labels, key=target_key)
-    return targets, {t: "+".join(labels[t]) for t in targets}
+    return targets, {t: "+".join(labels[t]) for t in targets}, {t: "+".join(sorted(roles[t])) for t in targets}
 
 
 def sample_hosts(resolved: dict, limit: int) -> dict:
@@ -183,7 +189,7 @@ def cmd_run(a) -> None:
     outs = {k: v["value"] for k, v in json.loads(sh("terraform", f"-chdir={a.tf_dir}", "output", "-json")).items()}
     region, bucket, instances = outs["aws_region"], outs["s3_bucket"], outs["instances"]
     ids = [instances[k]["id"] for k in sorted(instances, key=int)]
-    cex_args, hosts, labels, mode = list(a.cex_args), {}, {}, a.mode
+    cex_args, hosts, labels, roles, mode = list(a.cex_args), {}, {}, {}, a.mode
     profile = load_profile(a.profile) if a.profile else None
     endpoints = profile["endpoints"] if profile else []
     if a.endpoint:
@@ -200,7 +206,7 @@ def cmd_run(a) -> None:
         names = sorted({host_port(ep)[0] for ep in endpoints} | set(a.hosts.split(",") if a.hosts else []))
         hosts = sample_hosts(resolve(region, ids[0], names, a.resolve_rounds), a.max_targets_per_host)
         adhoc = [{"name": h, "protocol": "tcp", "host": h, "port": 443} for h in (a.hosts.split(",") if a.hosts else [])]
-        targets, labels = probe_targets(endpoints + adhoc, hosts)
+        targets, labels, roles = probe_targets(endpoints + adhoc, hosts)
         if not targets:
             sys.exit("No IPv4 addresses resolved")
         cex_args += ["--targets", ",".join(targets)]
@@ -229,7 +235,8 @@ def cmd_run(a) -> None:
     local = Path(a.results_dir) / run_id
     sh("aws", "--region", region, "s3", "cp", "--only-show-errors", "--recursive", f"s3://{bucket}/results/{run_id}/", str(local))
     meta = {"mode": mode, "profile": profile and profile.get("name"), "endpoint": a.endpoint, "start_at": start_at,
-            "cex_args": cex_args, "hosts": hosts, "target_labels": labels, "instances": instances}
+            "cex_args": cex_args, "hosts": hosts, "target_labels": labels, "target_roles": roles,
+            "weights": (profile or {}).get("weights", {}), "instances": instances}
     (local / "run.json").write_text(json.dumps(meta, indent=2))
     print(f"\nResults in {local}\n")
     compare([local])
@@ -267,17 +274,15 @@ def load_run(run_dir: Path) -> dict:
     mode = ("probe" if "syn_rtt_us" in header else "http" if "http_status" in header else "ws" if "rtt_us" in header
             else "stream" if "recv_wall_us" in header else run.get("mode"))
     labels = run.get("target_labels") or {ip: h for h, ips in run.get("hosts", {}).items() for ip in ips}
-    return {"dir": run_dir, "mode": mode, "insts": insts, "host_of": labels}
+    return {"dir": run_dir, "mode": mode, "insts": insts, "host_of": labels, "roles": run.get("target_roles", {}),
+            "weights": run.get("weights", {})}
 
 
 def series(inst: dict, mode: str) -> dict:
-    """Per instance {key: value µs}: slot -> RTT for probe/ws, event key -> first arrival for stream."""
+    """Per instance {slot: RTT µs} of measured samples."""
     out = {}
     for r in inst["rows"]:
-        if mode == "stream":
-            k, v = r["key"], float(r["recv_wall_us"])
-            out[k] = min(v, out.get(k, v))
-        elif r["status"] == "ok" and r["warmup"] == "0":
+        if r["status"] == "ok" and r["warmup"] == "0":
             # Kernel SYN RTT, falling back to connect() time where the kernel gave no sample
             v = (float(r["syn_rtt_us"]) or float(r["connect_us"])) if mode == "probe" else float(r["rtt_us"])
             out[int(r["slot"])] = v
@@ -285,7 +290,7 @@ def series(inst: dict, mode: str) -> dict:
 
 
 def relative(all_series: dict) -> dict:
-    """Each instance's value minus the fleet median for the same slot or event."""
+    """Each instance's value minus the fleet median for the same slot."""
     rel = {name: [] for name in all_series}
     for k in set().union(*all_series.values()):
         vals = {n: s[k] for n, s in all_series.items() if k in s}
@@ -366,30 +371,85 @@ def verdict(run: dict, ranked: list, min_diff_us: float = 5.0) -> str:
     med = statistics.median(diffs)
     lo, hi = median_ci(diffs)
     text = f"{a['inst']['name']} vs runner-up {b['inst']['name']}: median paired diff {med:+.1f} µs, 95% CI [{lo:+.1f}, {hi:+.1f}]"
-    significant = hi < 0
+    if hi < 0:
+        return text + (f" -> negligible (below {min_diff_us:g} µs)" if abs(med) < min_diff_us else " -> significant")
+    if abs(med) < min_diff_us:
+        return text + f" -> NOT significant (no lead above {min_diff_us:g} µs)"
+    # The CI half-width shrinks with sqrt(n); this lead is clear once the half-width is below |med| / 2
+    need = len(diffs) * ((hi - lo) / 2 / (abs(med) / 2)) ** 2
+    return text + f" -> NOT significant; ~{need:,.0f} paired samples (have {len(diffs):,}) would resolve this lead"
+
+
+def report_stream(run: dict) -> list:
+    """Stream arrivals carry wall-clock times; instances agree only to their chrony error (~100 µs on the basic Time Sync
+    Service), more than placements differ, so this reports the data without ranking. Rank MD distance by probe RTT."""
+    print(f"Run {run['dir'].name}: stream, {len(run['insts'])} instances (not ranked: cross-instance arrival times are only "
+          "as good as the clocks; use the md-role probe ranking)")
+    for inst in run["insts"]:
+        rows = inst["rows"]
+        lag = sorted(int(r["recv_wall_us"]) - int(r["event_time_ms"]) * 1000 for r in rows if r["event_time_ms"] != "0")
+        mid = f"{lag[len(lag) // 2] / 1000:.1f} ms" if lag else "-"
+        clock = f"±{inst['clock_us']:.0f} µs" if inst["clock_us"] is not None else "-"
+        print(f"  {inst['name']:<24} part {inst['partition']:>2}  events {len(rows):>7}  receive − event time p50 {mid}  clock {clock}")
+    print("")
+    export(run)
+    return []
+
+
+def by_role(run: dict, role: str) -> dict:
+    """The run restricted to targets serving `role`."""
+    keep = {t for t, r in run["roles"].items() if role in r.split("+")}
+    insts = [{**i, "rows": [r for r in i["rows"] if r["target"] in keep]} for i in run["insts"]]
+    return {**run, "insts": insts}
+
+
+def spearman(a: list, b: list) -> float:
+    ra = {v: i for i, v in enumerate(sorted(range(len(a)), key=lambda k: a[k]))}
+    rb = {v: i for i, v in enumerate(sorted(range(len(b)), key=lambda k: b[k]))}
+    n = len(a)
+    return 1 - 6 * sum((ra[k] - rb[k]) ** 2 for k in range(n)) / (n * (n * n - 1)) if n > 1 else float("nan")
+
+
+def report_roles(run: dict, weights: dict, min_diff_us: float) -> None:
+    """Per-role rankings (order entry, market data), how they agree, and a weighted pick for one host doing both."""
+    roles = sorted({r for v in run["roles"].values() for r in v.split("+")})
+    if len(roles) < 2:
+        return
+    w = {r: float(weights.get(r, 1)) for r in roles}
+    total = sum(w.values()) or 1
+    scores, means = {}, {}
+    print("  per role (trimmed mean Δ vs fleet, µs; lower is closer):")
+    for role in roles:
+        sub_run = by_role(run, role)
+        ranked = rank(sub_run)
+        means[role] = {r["inst"]["name"]: r["mean"] for r in ranked}
+        order = ", ".join(f"{r['inst']['name'].split(':')[0]}({r['mean']:+.1f})" for r in ranked)
+        print(f"    {role:<6} weight {w[role] / total:.2f}: {order}")
+        print(f"           {verdict(sub_run, ranked, min_diff_us)}")
+    names = list(means[roles[0]])
+    if len(roles) == 2:
+        rho = spearman([means[roles[0]][n] for n in names], [means[roles[1]][n] for n in names])
+        print(f"    rank correlation {roles[0]} vs {roles[1]}: {rho:+.2f} (near +1: the same hosts are close to both)")
+    for n in names:
+        scores[n] = sum(w[r] / total * means[r][n] for r in roles)
+    best = sorted(scores, key=scores.get)
+    print("    weighted score: " + ", ".join(f"{n.split(':')[0]}({scores[n]:+.1f})" for n in best))
+    print(f"    suggested: keep_instances = [{best[0].split(':')[0]}]   (confirm with runs at other times)")
+
+
+def report(run: dict, min_diff_us: float = 5.0, weights: dict = None) -> list:
     if run["mode"] == "stream":
-        ca, cb = a["inst"]["clock_us"], b["inst"]["clock_us"]
-        bound = (ca or 0) + (cb or 0)
-        text += f", clock error bound {bound:.0f} µs" + ("" if ca is not None and cb is not None else " (chrony data missing)")
-        significant = significant and abs(med) > bound
-    if significant and abs(med) < min_diff_us:
-        return text + f" -> negligible (below {min_diff_us:g} µs)"
-    return text + (" -> significant" if significant else " -> NOT significant")
-
-
-def report(run: dict, min_diff_us: float = 5.0) -> list:
+        return report_stream(run)
     mode, ranked = run["mode"], rank(run)
-    metric = {"probe": "TCP handshake RTT (kernel)", "ws": "app round trip", "http": "HTTP round trip", "stream": "arrival time"}[mode]
+    metric = {"probe": "TCP handshake RTT (kernel)", "ws": "app round trip", "http": "HTTP round trip"}[mode]
     print(f"Run {run['dir'].name}: {mode}, {len(ranked)} instances, metric: {metric}")
     print(f"  {'rank':<5}{'instance':<24}{'part':>5}  {'median Δ vs fleet':>18}  {'95% CI':>18}  {'trim. mean Δ':>12}  distribution (µs)")
     for i, r in enumerate(ranked, 1):
-        # Stream arrivals are wall-clock times, so only their offsets from the fleet are meaningful
-        dist = percentiles(r["rel" if mode == "stream" else "values"])
-        clock = f" clock±{r['inst']['clock_us']:.0f}" if mode == "stream" and r["inst"]["clock_us"] is not None else ""
-        print(f"  {i:<5}{r['inst']['name']:<24}{r['inst']['partition']:>5}  {r['median']:>+15.1f} µs  [{r['ci'][0]:+7.1f}, {r['ci'][1]:+7.1f}]  {r['mean']:>+9.1f} µs  {dist}{clock}")
-    print("\n".join(histograms({r["inst"]["name"]: r["rel" if mode == "stream" else "values"] for r in ranked})))
+        print(f"  {i:<5}{r['inst']['name']:<24}{r['inst']['partition']:>5}  {r['median']:>+15.1f} µs  [{r['ci'][0]:+7.1f}, {r['ci'][1]:+7.1f}]  {r['mean']:>+9.1f} µs  {percentiles(r['values'])}")
+    print("\n".join(histograms({r["inst"]["name"]: r["values"] for r in ranked})))
     if mode == "probe":
         per_target(run)
+        report_roles(run, weights or run["weights"], min_diff_us)
     if mode in ("ws", "http"):
         for r in ranked:
             by_conn = {}
@@ -437,8 +497,8 @@ def export(run: dict) -> None:
                 w.writerow([inst["name"], inst["partition"], *(r[c] for c in cols)])
 
 
-def compare(dirs: list, min_diff_us: float = 5.0) -> None:
-    rankings = [report(load_run(Path(d)), min_diff_us) for d in dirs]
+def compare(dirs: list, min_diff_us: float = 5.0, weights: dict = None) -> None:
+    rankings = [r for r in (report(load_run(Path(d)), min_diff_us, weights) for d in dirs) if r]
     if len(rankings) > 1:
         print("Rank per run (a winner should hold across runs taken at different times):")
         for iid in rankings[0]:
@@ -466,6 +526,7 @@ def main() -> None:
     c = sub.add_parser("compare", help="rank instances from downloaded results; several runs show consistency")
     c.add_argument("dirs", nargs="+")
     c.add_argument("--min-diff-us", type=float, default=5.0, help="smaller winner leads are reported as negligible")
+    c.add_argument("--weights", help="role weights for the combined score, e.g. order=0.7,md=0.3 (default: profile, else equal)")
     # Everything after the first "--" is passed to cex_ws untouched
     argv = sys.argv[1:]
     cut = argv.index("--") if "--" in argv else len(argv)
@@ -474,7 +535,8 @@ def main() -> None:
     if a.cmd == "run":
         cmd_run(a)
     else:
-        compare(a.dirs, a.min_diff_us)
+        weights = dict(kv.split("=", 1) for kv in a.weights.split(",")) if a.weights else None
+        compare(a.dirs, a.min_diff_us, weights)
 
 
 if __name__ == "__main__":
