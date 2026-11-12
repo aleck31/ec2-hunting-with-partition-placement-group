@@ -9,6 +9,9 @@ mock_provider "aws" {
   mock_resource "aws_iam_instance_profile" {
     defaults = { arn = "arn:aws:iam::123456789012:instance-profile/ec2" }
   }
+  mock_data "aws_ec2_instance_type" {
+    defaults = { default_cores = 4 }
+  }
 }
 
 variables {
@@ -18,6 +21,10 @@ variables {
 }
 
 run "hunt" {
+  assert {
+    condition     = aws_instance.client_ppg["0"].cpu_options[0].core_count == 4 && aws_instance.client_ppg["0"].cpu_options[0].threads_per_core == 1
+    error_message = "cpu_options must set core_count with threads_per_core, or SMT stays on"
+  }
   assert {
     condition     = [for k in sort(keys(output.instances)) : output.instances[k].partition] == [1, 2, 3, 4, 5, 6, 7]
     error_message = "Expected one instance in each of the 7 partitions"

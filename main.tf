@@ -188,6 +188,10 @@ locals {
   instance_indices = var.keep_instances != null ? var.keep_instances : range(var.instance_count)
 }
 
+data "aws_ec2_instance_type" "selected" {
+  instance_type = var.instance_type
+}
+
 # Keyed by index ("0", "1", ...) so dropping losers via keep_instances doesn't shift the winner's address
 resource "aws_instance" "client_ppg" {
   for_each                             = toset([for i in local.instance_indices : tostring(i)])
@@ -204,13 +208,15 @@ resource "aws_instance" "client_ppg" {
   placement_group                      = aws_placement_group.partition.name
   placement_partition_number           = tonumber(each.key) % aws_placement_group.partition.partition_count + 1
 
+  # Hyper-threading off; without core_count the provider drops threads_per_core and launches with SMT on
   cpu_options {
+    core_count       = data.aws_ec2_instance_type.selected.default_cores
     threads_per_core = 1
   }
 
-  # A new AMI means a relaunch, new user data or type a stop/start; all lose the hunted placement
+  # Changing any of these relaunches or stop/starts the instance, which loses the hunted placement
   lifecycle {
-    ignore_changes = [ami, user_data, instance_type]
+    ignore_changes = [ami, user_data, instance_type, cpu_options]
   }
 
   tags = {

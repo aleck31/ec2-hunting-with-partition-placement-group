@@ -16,7 +16,7 @@ This project deploys a fleet of EC2 instances (default 7 × `c8i.2xlarge`) in a 
 - **AMI**: your production AMI via `ami_id`, otherwise Amazon Linux 2023 (kernel 6.18)
 - **Region**: ap-northeast-1 (Tokyo)
 - **Performance Optimizations** (`scripts/client.sh`, logged at every boot with a `HUNT:` prefix):
-  - Hyper-threading disabled (`threads_per_core = 1`)
+  - Hyper-threading disabled: `cpu_options` with the type's core count and `threads_per_core = 1`, backed by `nosmt` and an SMT check in `client.sh`
   - CPU isolation: cores 2..N-1 isolated via kernel boot parameters (`isolcpus`, `nohz_full`, `rcu_nocbs`), set on first boot followed by one reboot; the benchmark is pinned to them
   - Housekeeping: cores 0-1 take all device interrupts (`irqaffinity`, irqbalance disabled), unbound kernel workqueues and system services
   - Noise reduction: `idle=poll`, `clocksource=tsc`, NMI watchdog, audit and THP off, socket busy polling, NIC interrupt moderation off

@@ -5,7 +5,15 @@ trap 'echo "HUNT: ERROR line $LINENO: $BASH_COMMAND" >&2' ERR
 
 log() { echo "HUNT: $*"; }
 
-NCPU=$(nproc --all)
+# SMT should already be off via cpu_options; if the instance came up with it, turn it off before counting cores
+if [ "$(cat /sys/devices/system/cpu/smt/active 2>/dev/null || echo 0)" = 1 ]; then
+  if echo off 2>/dev/null > /sys/devices/system/cpu/smt/control; then log "smt: was on, turned off"; else log "ERROR smt: on and could not be turned off"; fi
+else
+  log "smt: off"
+fi
+
+# Online CPUs; nproc would only count this process's affinity, which excludes isolated cores
+NCPU=$(getconf _NPROCESSORS_ONLN)
 HOUSEKEEPING=0-1
 ISOLATED=2-$((NCPU - 1))
 BIN=/share/bench/sources/cex_ws/target/release/cex_ws
@@ -78,7 +86,7 @@ fi
 
 # CPU isolation needs kernel boot parameters, so the first boot sets them and reboots once.
 # idle=poll keeps idle cores spinning instead of halting, so waking up for a response is fast.
-CMDLINE="isolcpus=$ISOLATED nohz_full=$ISOLATED rcu_nocbs=$ISOLATED irqaffinity=$HOUSEKEEPING idle=poll nosoftlockup skew_tick=1 nmi_watchdog=0 audit=0 transparent_hugepage=never clocksource=tsc tsc=reliable"
+CMDLINE="isolcpus=$ISOLATED nohz_full=$ISOLATED rcu_nocbs=$ISOLATED irqaffinity=$HOUSEKEEPING nosmt idle=poll nosoftlockup skew_tick=1 nmi_watchdog=0 audit=0 transparent_hugepage=never clocksource=tsc tsc=reliable"
 MARKER=/var/lib/hunt/cmdline-set
 if [ "$NCPU" -lt 3 ]; then
   log "cmdline: only $NCPU CPUs, CPU isolation skipped"
