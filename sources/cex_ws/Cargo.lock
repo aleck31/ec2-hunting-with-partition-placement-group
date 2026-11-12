@@ -35,18 +35,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cex_ws"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "rustls",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "url",
-]
-
-[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -97,6 +85,19 @@ dependencies = [
  "jobserver",
  "libc",
  "shlex",
+]
+
+[[package]]
+name = "cex_ws"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "libc",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
 ]
 
 [[package]]

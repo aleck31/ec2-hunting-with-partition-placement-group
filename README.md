@@ -42,15 +42,11 @@ cd sources/cex_ws
 # Find CEX WebSocket IPs
 dig +short <ws-fapi.cex-endpoint.com>
 
-# Run with specific target IP
-cargo run <target_ip_address>
+# Run against one IP, e.g. 10 quick samples
+cargo run --release -- <target_ip_address> --url wss://<ws-fapi.cex-endpoint.com>/ws-fapi/v1 --samples 10 --interval-ms 200
 ```
 
-The client will:
-- Connect to the specified CEX IP
-- Send orderbook depth requests every second
-- Measure latency (min/max/avg/percentiles)
-- Exit after 600 samples with statistics
+Options (see [Benchmark Configuration](#benchmark-configuration)): `--url` (required), `--request`, `--samples`, `--interval-ms`. The kernel TCP RTT is reported on Linux only. Behind a local proxy or VPN the TCP RTT only covers the hop to the proxy, so compare it with the app round trip on EC2, not on a laptop.
 
 ## Deployment
 
@@ -125,16 +121,17 @@ aws ssm start-session --target <instance-id> --region ap-northeast-1
 Run the Rust program simultaneously on all instances:
 ```bash
 TARGET_IP=<target_ip_address>
+WS_URL=wss://<ws-fapi.cex-endpoint.com>/ws-fapi/v1
 
 # Run on a single instance via SSM session
-sudo nohup taskset -c "$(cat /sys/devices/system/cpu/isolated)" /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 &
+sudo nohup taskset -c "$(cat /sys/devices/system/cpu/isolated)" /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP --url $WS_URL > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 &
 
 # Or run on all instances at once via SSM send-command
 INSTANCE_IDS=$(terraform output -json instance_id_and_partition_id_mapping | jq -r 'keys[]')
 aws ssm send-command \
   --targets "Key=instanceids,Values=$(echo $INSTANCE_IDS | tr ' ' ',')" \
   --document-name "AWS-RunShellScript" \
-  --parameters "commands=['sudo nohup taskset -c \$(cat /sys/devices/system/cpu/isolated) /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP > /home/ec2-user/\$(ec2-metadata -i | awk \"{print \\$2}\").log 2>&1 &']" \
+  --parameters "commands=['sudo nohup taskset -c \$(cat /sys/devices/system/cpu/isolated) /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP --url $WS_URL > /home/ec2-user/\$(ec2-metadata -i | awk \"{print \\$2}\").log 2>&1 &']" \
   --region ap-northeast-1
 ```
 
@@ -182,11 +179,11 @@ terraform destroy --auto-approve
 
 The Rust client (`sources/cex_ws/src/main.rs`) performs:
 
-1. **Connection**: Connects to specified CEX endpoint via WebSocket
-2. **Warm-up**: Skips first 5 requests
-3. **Measurement**: Records 600 samples with 1-second intervals
-4. **Metrics**: Tracks min, max, average, and percentiles (p50, p75, p90, p99, p99.9)
-5. **Request**: Depth data for BTCUSDT with 5 levels
+1. **Connection**: Opens TCP straight to `<target_ip>` (no DNS), then the TLS and WebSocket handshakes with the hostname from `--url` as SNI and Host; up to 5 attempts with exponential backoff
+2. **Warm-up**: Discards the first 5 responses
+3. **Measurement**: Sends one request every `--interval-ms` (default 1000) and records `--samples` responses (default 600). The app round trip runs from just before the send to the moment the response frame is read, before JSON parsing
+4. **Metrics**: min, max and percentiles of the app round trip and of the kernel's smoothed TCP RTT (`TCP_INFO`, sampled after each response), plus the TCP connect time and retransmit count. The server's ACK rides on its response, so srtt also includes exchange processing time and tracks the app round trip; the TCP connect time (SYN to SYN-ACK) is the network-only figure, measured once per run. A percentile is printed only when at least 5 samples lie above it, so p99.9 needs 5,000+ samples
+5. **Request**: `--request` is a JSON template whose `{id}` is replaced per request and must come back as the response's string `id`; the default is a Binance-style `depth` request for BTCUSDT with 5 levels
 
 
 ## Outputs
@@ -248,4 +245,4 @@ cat /proc/interrupts
 
 - Benchmark does not auto-run; you need to manually start it via SSM (see step 4)
 - Results are logged to `/home/ec2-user/<instance-id>.log`
-- Process exits after 600 samples (~10 minutes)
+- Process exits after `--samples` responses (default 600, ~10 minutes at the default interval)
