@@ -5,15 +5,15 @@ resource "aws_placement_group" "partition" {
 }
 
 data "aws_s3_bucket" "existing" {
-  bucket = var.s3_bucket  # Replace with your actual bucket name
+  bucket = var.s3_bucket # Replace with your actual bucket name
 }
 
 resource "aws_s3_object" "main_source" {
-  bucket  = data.aws_s3_bucket.existing.bucket
-  acl     = "private"
-  key     = "source.tar.gz"
-  source = "${path.module}/sources/source.tar.gz"
-  etag = filemd5("${path.module}/sources/source.tar.gz")
+  bucket        = data.aws_s3_bucket.existing.bucket
+  acl           = "private"
+  key           = "source.tar.gz"
+  source        = "${path.module}/sources/source.tar.gz"
+  etag          = filemd5("${path.module}/sources/source.tar.gz")
   force_destroy = true
 }
 
@@ -84,7 +84,7 @@ resource "aws_iam_role_policy_attachment" "ssm" {
 }
 
 data "aws_vpc" "existing" {
-  id = var.aws_vpc_id  # Replace with your actual VPC ID
+  id = var.aws_vpc_id # Replace with your actual VPC ID
 }
 
 resource "aws_subnet" "public" {
@@ -180,7 +180,7 @@ data "cloudinit_config" "cloudinit_client" {
   part {
     filename     = "client.sh"
     content_type = "text/x-shellscript-per-boot"
-    content      = templatefile("${path.module}/scripts/client.sh", {
+    content = templatefile("${path.module}/scripts/client.sh", {
       s3_bucket = var.s3_bucket
     })
   }
