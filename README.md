@@ -13,6 +13,7 @@ This project deploys 7 x `c6in.2xlarge` to measure WebSocket latency to CEX API 
 
 - **EC2 Instances**: 7x c6in.2xlarge instances in partition placement group
 - **Placement Strategy**: Partition placement group for network isolation
+- **AMI**: your production AMI via `ami_id`, otherwise Amazon Linux 2023 (kernel 6.18)
 - **Region**: ap-northeast-1 (Tokyo)
 - **Performance Optimizations**:
   - Hyper-threading disabled
@@ -72,8 +73,17 @@ Edit `terraform.tfvars` with your values:
 - `aws_vpc_id`: Your target VPC ID
 - `aws_availability_zone_id`: Target availability zone
 - `s3_bucket`: S3 bucket for source code distribution
+- `ami_id` (optional): the AMI to hunt with, see below
 
 See `variables.tf` for all available options.
+
+#### Hunt with your production AMI
+
+Set `ami_id` to the AMI the winning instance will run in production (e.g. your latency-tuned golden AMI). An instance keeps its host across reboots, but switching to another AMI means launching a new instance, which lands on a new host and throws the hunted placement away. Without `ami_id`, the latest Amazon Linux 2023 AMI with kernel 6.18 is used.
+
+- The AMI must be x86_64 with cloud-init, AWS CLI v2 (to fetch the source from S3) and SSM Agent (the only access path). `scripts/client.sh` is written for Amazon Linux 2023; on other distributions its tuning steps may fail.
+- Existing instances ignore later changes to `ami_id` or to the default AMI. To re-hunt with a new AMI, run `terraform apply -replace='aws_instance.client_ppg[N]'` per instance, or destroy and apply again.
+- If the AMI isolates CPUs, pin the benchmark to those cores (`cat /sys/devices/system/cpu/isolated`) instead of `0-1` in step 4.
 
 ### 3. Deploy Infrastructure
 

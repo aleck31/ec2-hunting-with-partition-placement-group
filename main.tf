@@ -141,13 +141,15 @@ resource "aws_iam_instance_profile" "ec2_profile" {
   role = aws_iam_role.ec2_s3_access.name
 }
 
+# Default AMI, used only when var.ami_id is unset; pins the kernel series so hunts don't flip between 6.1/6.12/6.18
 data "aws_ami" "amazon_linux_2023" {
+  count       = var.ami_id == null ? 1 : 0
   most_recent = true
   owners      = ["amazon"]
 
   filter {
     name   = "name"
-    values = ["al2023-ami-2023*-x86_64"]
+    values = ["al2023-ami-2023.*-kernel-6.18-x86_64"]
   }
 }
 
@@ -184,7 +186,7 @@ data "cloudinit_config" "cloudinit_client" {
 
 resource "aws_instance" "client_ppg" {
   count                                = length(var.main_ec2_instance_type_client_ppg)
-  ami                                  = data.aws_ami.amazon_linux_2023.image_id
+  ami                                  = var.ami_id != null ? var.ami_id : data.aws_ami.amazon_linux_2023[0].image_id
   instance_type                        = var.main_ec2_instance_type_client_ppg[count.index]
   subnet_id                            = aws_subnet.public.id
   user_data                            = data.cloudinit_config.cloudinit_client.rendered
@@ -201,6 +203,12 @@ resource "aws_instance" "client_ppg" {
   cpu_options {
     threads_per_core = 1
   }
+
+  # A new AMI means a relaunch, which loses the hunted placement; use -replace to re-hunt deliberately
+  lifecycle {
+    ignore_changes = [ami]
+  }
+
   tags = {
     Name = "client-ppg-${count.index}"
   }

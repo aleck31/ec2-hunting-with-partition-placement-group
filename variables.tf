@@ -26,6 +26,12 @@ variable "main_ec2_instance_type_client_ppg" {
   default     = ["c6in.2xlarge", "c6in.2xlarge", "c6in.2xlarge", "c6in.2xlarge", "c6in.2xlarge", "c6in.2xlarge", "c6in.2xlarge"]
 }
 
+variable "ami_id" {
+  description = "AMI to hunt with; set it to your production AMI (x86_64). Null uses the latest AL2023 kernel-6.18 AMI"
+  type        = string
+  default     = null
+}
+
 variable "partition_placement_group_name" {
   description = "Name of the partition placement group"
   type        = string
