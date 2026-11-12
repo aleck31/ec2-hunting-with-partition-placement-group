@@ -48,6 +48,22 @@ run "input_changes_keep_instances" {
   }
 }
 
+run "partitions_wrap_and_unplaced_follow" {
+  command = plan
+  variables {
+    instance_count          = 9
+    unplaced_instance_count = 2
+  }
+  assert {
+    condition     = aws_instance.client_ppg["7"].placement_partition_number == 1 && aws_instance.client_ppg["8"].placement_partition_number == 2
+    error_message = "Instances beyond 7 must wrap around the partitions"
+  }
+  assert {
+    condition     = output.instances["8"].in_placement_group && !output.instances["9"].in_placement_group && !output.instances["10"].in_placement_group
+    error_message = "Unplaced instances must take the indices after instance_count, outside the group"
+  }
+}
+
 run "keep_winner" {
   variables {
     keep_instances = [3]

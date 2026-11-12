@@ -437,15 +437,28 @@ def report_roles(run: dict, weights: dict, min_diff_us: float) -> None:
     print(f"    suggested: keep_instances = [{best[0].split(':')[0]}]   (confirm with runs at other times)")
 
 
+def lost_slots(inst: dict) -> dict:
+    """Measured slots without a sample, by status (late, timeout, noconn, error)."""
+    out = {}
+    for r in inst["rows"]:
+        if r.get("warmup") == "0" and r.get("status") != "ok":
+            out[r["status"]] = out.get(r["status"], 0) + 1
+    return out
+
+
 def report(run: dict, min_diff_us: float = 5.0, weights: dict = None) -> list:
     if run["mode"] == "stream":
         return report_stream(run)
     mode, ranked = run["mode"], rank(run)
     metric = {"probe": "TCP handshake RTT (kernel)", "ws": "app round trip", "http": "HTTP round trip"}[mode]
     print(f"Run {run['dir'].name}: {mode}, {len(ranked)} instances, metric: {metric}")
-    print(f"  {'rank':<5}{'instance':<24}{'part':>5}  {'median Δ vs fleet':>18}  {'95% CI':>18}  {'trim. mean Δ':>12}  distribution (µs)")
+    print(f"  {'rank':<5}{'instance':<24}{'part':>5}  {'median Δ vs fleet':>18}  {'95% CI':>18}  {'trim. mean Δ':>12}  {'lost':>5}  distribution (µs)")
     for i, r in enumerate(ranked, 1):
-        print(f"  {i:<5}{r['inst']['name']:<24}{r['inst']['partition']:>5}  {r['median']:>+15.1f} µs  [{r['ci'][0]:+7.1f}, {r['ci'][1]:+7.1f}]  {r['mean']:>+9.1f} µs  {percentiles(r['values'])}")
+        lost = sum(lost_slots(r["inst"]).values())
+        print(f"  {i:<5}{r['inst']['name']:<24}{r['inst']['partition']:>5}  {r['median']:>+15.1f} µs  [{r['ci'][0]:+7.1f}, {r['ci'][1]:+7.1f}]  {r['mean']:>+9.1f} µs  {lost:>5}  {percentiles(r['values'])}")
+    details = [f"{r['inst']['name']} " + " ".join(f"{k}={v}" for k, v in sorted(lost_slots(r["inst"]).items())) for r in ranked if lost_slots(r["inst"])]
+    if details:
+        print("  lost slots (excluded from pairing): " + "; ".join(details))
     print("\n".join(histograms({r["inst"]["name"]: r["values"] for r in ranked})))
     if mode == "probe":
         per_target(run)
@@ -519,7 +532,7 @@ def main() -> None:
     r.add_argument("--resolve-rounds", type=int, default=20, help="DNS lookups per host and name server (answers rotate)")
     r.add_argument("--max-targets-per-host", type=int, default=16, help="probe: fixed-seed sample of each host's IPs")
     r.add_argument("--max-minutes", type=float, default=10, help="probe: refuse runs estimated to take longer")
-    r.add_argument("--lead-s", type=int, default=20, help="seconds between now and the shared start time")
+    r.add_argument("--lead-s", type=int, default=60, help="seconds between now and the shared start time (SSM delivery to every instance must fit)")
     r.add_argument("--timeout-s", type=int, default=3600, help="max run time on the instances")
     r.add_argument("--tf-dir", default=".", help="Terraform root to read outputs from")
     r.add_argument("--results-dir", default="results")
