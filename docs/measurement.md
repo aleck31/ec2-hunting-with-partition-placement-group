@@ -10,7 +10,7 @@ All modes take `--start-at <unix-ms>` (a time grid shared by all instances; `hun
 
 | Mode | Measures |
 |---|---|
-| `probe` | TCP handshake RTT, the ranking metric: the kernel's RTT sample from SYN/SYN-ACK (`TCP_INFO`), free of user-space wakeup delay. One new connection per slot, targets (`IP` or `IP:port`) round-robin, first handshakes per target discarded. Works for any TCP service (HTTPS, WebSocket, FIX) |
+| `probe` | TCP handshake RTT, the ranking metric: the kernel's RTT sample from SYN/SYN-ACK (`TCP_INFO`), free of user-space wakeup delay. One new connection per slot, targets (`IP` or `IP:port`) round-robin, first handshakes per target discarded; handshakes overlap, so a lost SYN costs only its own slot. Works for any TCP service (HTTPS, WebSocket, FIX) |
 | `ws` | Round trip on established WebSocket connections, from the request write to the response frame, before JSON parsing. `--request` is a JSON template whose `{id}` comes back in `--id-field` |
 | `http` | Round trip on keep-alive HTTP connections, from the request write to the parsed response head |
 | `stream` | Wall-clock arrival of each stream event, with the exchange's event time; reported, not ranked (see the clock rule) |

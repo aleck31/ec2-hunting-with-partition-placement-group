@@ -3,6 +3,7 @@ use std::os::fd::AsRawFd;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::net::TcpStream;
 
 use crate::common::{self, Grid, Result, RunArgs};
@@ -62,6 +63,29 @@ struct Sample {
     syn_rtt_us: u64,
 }
 
+async fn handshake(slot: u64, target: SocketAddr, warmup: bool, offset_us: i64) -> Sample {
+    let mut s = Sample {
+        slot,
+        target,
+        warmup,
+        status: "ok",
+        offset_us,
+        connect_us: 0,
+        syn_rtt_us: 0,
+    };
+    let start = Instant::now();
+    match tokio::time::timeout(TIMEOUT, TcpStream::connect(target)).await {
+        Ok(Ok(stream)) => {
+            s.connect_us = start.elapsed().as_micros() as u64;
+            // The kernel's first RTT sample is the SYN/SYN-ACK exchange, free of user-space wakeup delay
+            s.syn_rtt_us = common::tcp_info(stream.as_raw_fd()).map_or(0, |i| i.rtt_us as u64);
+        }
+        Ok(Err(_)) => s.status = "error",
+        Err(_) => s.status = "timeout",
+    }
+    s
+}
+
 /// Measures TCP handshake RTT, the network-only part of the path: the peer's kernel answers the SYN.
 pub async fn run(args: ProbeArgs) -> Result<()> {
     if args.count == 0 || args.interval_ms == 0 {
@@ -83,34 +107,29 @@ pub async fn run(args: ProbeArgs) -> Result<()> {
     );
 
     let mut samples = Vec::with_capacity(total as usize);
-    for slot in 0..total {
-        let target = targets[(slot % n_targets) as usize];
-        let mut s = Sample {
-            slot,
-            target,
-            warmup: slot / n_targets < args.warmup,
-            status: "late",
-            offset_us: 0,
-            connect_us: 0,
-            syn_rtt_us: 0,
-        };
-        if grid.wait(slot).await {
-            s.offset_us = grid.offset_us(slot);
-            let start = Instant::now();
-            match tokio::time::timeout(TIMEOUT, TcpStream::connect(target)).await {
-                Ok(Ok(stream)) => {
-                    s.connect_us = start.elapsed().as_micros() as u64;
-                    // The kernel's first RTT sample is the SYN/SYN-ACK exchange, free of user-space wakeup delay
-                    s.syn_rtt_us =
-                        common::tcp_info(stream.as_raw_fd()).map_or(0, |i| i.rtt_us as u64);
-                    s.status = "ok";
+    // Handshakes overlap instead of blocking the grid: a lost SYN is retransmitted only after 1 s, so waiting for it
+    // would make the following slots late
+    let mut inflight = FuturesUnordered::new();
+    let mut next = 0;
+    loop {
+        tokio::select! {
+            biased;
+            Some(s) = inflight.next(), if !inflight.is_empty() => samples.push(s),
+            on_time = grid.wait(next), if next < total => {
+                let slot = next;
+                next += 1;
+                let target = targets[(slot % n_targets) as usize];
+                let warmup = slot / n_targets < args.warmup;
+                if on_time {
+                    inflight.push(handshake(slot, target, warmup, grid.offset_us(slot)));
+                } else {
+                    samples.push(Sample { slot, target, warmup, status: "late", offset_us: 0, connect_us: 0, syn_rtt_us: 0 });
                 }
-                Ok(Err(_)) => s.status = "error",
-                Err(_) => s.status = "timeout",
             }
+            else => break,
         }
-        samples.push(s);
     }
+    samples.sort_by_key(|s| s.slot);
 
     println!(
         "TCP handshake RTT per target in µs (kernel SYN/SYN-ACK sample; connect() time in brackets):"
