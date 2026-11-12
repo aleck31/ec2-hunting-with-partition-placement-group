@@ -12,6 +12,17 @@ else
   log "smt: off"
 fi
 
+# Stream and probe start times rely on the Amazon Time Sync Service; log the source and chrony's error terms
+src=$(chronyc -n sources 2>/dev/null | awk '$1 ~ /^\^\*/ {print $2}') || true
+trk=$(chronyc tracking 2>/dev/null | awk -F' *: *' '/^(System time|Root delay|Root dispersion)/ {printf "%s=[%s] ", $1, $2}') || true
+if [ "$src" = 169.254.169.123 ]; then
+  log "clock: source $src $trk"
+elif [ -z "$src" ]; then
+  log "clock: no source selected yet $trk"
+else
+  log "WARNING clock: source $src is not the Amazon Time Sync Service (169.254.169.123) $trk"
+fi
+
 # Online CPUs; nproc would only count this process's affinity, which excludes isolated cores
 NCPU=$(getconf _NPROCESSORS_ONLN)
 HOUSEKEEPING=0-1
