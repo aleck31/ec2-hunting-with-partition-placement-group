@@ -144,7 +144,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cex_ws"
+name = "cex_latency"
 version = "0.1.0"
 dependencies = [
  "bytes",

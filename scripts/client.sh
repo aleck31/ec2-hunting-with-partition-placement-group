@@ -27,7 +27,7 @@ fi
 NCPU=$(getconf _NPROCESSORS_ONLN)
 HOUSEKEEPING=0-1
 ISOLATED=2-$((NCPU - 1))
-BIN=/share/bench/sources/cex_ws/target/release/cex_ws
+BIN=/share/bench/sources/cex_latency/target/release/cex_latency
 REBOOT=0
 
 # Turbo and governor are controllable only where the platform exposes them (bare metal)
@@ -88,7 +88,7 @@ SRC_MD5=$(md5sum /share/source.tar.gz | cut -d' ' -f1)
 if [ ! -x "$BIN" ] || [ "$SRC_MD5" != "$(cat /share/source.md5 2>/dev/null || true)" ]; then
   mkdir -p /share/bench
   tar -zxf /share/source.tar.gz -C /share/bench
-  (cd /share/bench/sources/cex_ws && /share/.cargo/bin/cargo build --release)
+  (cd /share/bench/sources/cex_latency && /share/.cargo/bin/cargo build --release)
   echo "$SRC_MD5" > /share/source.md5
   log "client: built $BIN"
 else

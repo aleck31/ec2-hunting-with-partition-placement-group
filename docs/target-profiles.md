@@ -38,6 +38,6 @@ host = "fix.example.com"
 port = 9000
 ```
 
-Any endpoint may add `args = [...]`, extra `cex_ws` options. `hunt.py run --profile P` probes the TCP handshake to the IPs of all endpoints, each on its own port; `--endpoint NAME` runs that endpoint's own protocol. Without a profile, give the mode and the `cex_ws` arguments yourself: `hunt.py run probe --hosts ws-fapi.binance.com` or `hunt.py run ws -- <ip> --url wss://...`.
+Any endpoint may add `args = [...]`, extra `cex_latency` options. `hunt.py run --profile P` probes the TCP handshake to the IPs of all endpoints, each on its own port; `--endpoint NAME` runs that endpoint's own protocol. Without a profile, give the mode and the `cex_latency` arguments yourself: `hunt.py run probe --hosts ws-fapi.binance.com` or `hunt.py run ws -- <ip> --url wss://...`.
 
 Before adding an exchange, check that its endpoints are not behind a CDN or proxying load balancer ([who answers the SYN](measurement.md#what-the-numbers-mean)) and that the request methods are public.

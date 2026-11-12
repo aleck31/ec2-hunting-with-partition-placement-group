@@ -1,12 +1,12 @@
 # Measurement
 
-How `cex_ws` and `scripts/hunt.py` measure, how to read the report, and where the numbers stop.
+How `cex_latency` and `scripts/hunt.py` measure, how to read the report, and where the numbers stop.
 
 Scope: this tool picks the host. Which market-data IPs the chosen host should subscribe to, and what subscribing over several connections at once gains, can only be measured on that host and belong to its trading application, not to hunting.
 
 ## Modes
 
-All modes take `--start-at <unix-ms>` (a time grid shared by all instances; `hunt.py` sets it) and `--out <csv>` (every sample). Sends are scheduled on the grid and spun onto it, so instances hit the exchange together, within their clock-sync error; each sample records its offset from the grid. Options and defaults: `cex_ws <mode> --help`.
+All modes take `--start-at <unix-ms>` (a time grid shared by all instances; `hunt.py` sets it) and `--out <csv>` (every sample). Sends are scheduled on the grid and spun onto it, so instances hit the exchange together, within their clock-sync error; each sample records its offset from the grid. Options and defaults: `cex_latency <mode> --help`.
 
 | Mode | Measures |
 |---|---|

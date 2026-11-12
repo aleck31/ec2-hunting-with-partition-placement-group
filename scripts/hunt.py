@@ -8,7 +8,7 @@
   scripts/hunt.py compare results/<run-id> [results/<run-id> ...]
 
 A profile (targets/*.toml) describes an exchange's endpoints and how to measure each; see docs/target-profiles.md. Arguments after
-"--" go to cex_ws unchanged. Run from the repo root (it reads `terraform output`); needs the AWS CLI with credentials
+"--" go to cex_latency unchanged. Run from the repo root (it reads `terraform output`); needs the AWS CLI with credentials
 for the account and Python 3.11+. Ranking compares instances slot by slot against the fleet median, so load swings on the exchange side cancel
 out; stream runs are reported but not ranked, since instance clocks only agree to ~100 µs.
 """
@@ -28,9 +28,9 @@ import tomllib
 from pathlib import Path
 from urllib.parse import urlsplit
 
-BIN = "/share/bench/sources/cex_ws/target/release/cex_ws"
+BIN = "/share/bench/sources/cex_latency/target/release/cex_latency"
 BARS = " ▁▂▃▄▅▆▇█"
-# Profile protocol -> cex_ws mode
+# Profile protocol -> cex_latency mode
 MODES = {"tcp": "probe", "ws": "ws", "stream": "stream", "http": "http"}
 DEFAULT_PORTS = {"https": 443, "wss": 443, "http": 80, "ws": 80}
 
@@ -130,7 +130,7 @@ def host_port(ep: dict) -> tuple:
 
 
 def endpoint_args(ep: dict) -> list:
-    """cex_ws options for an endpoint, after the target IP."""
+    """cex_latency options for an endpoint, after the target IP."""
     args = ["--url", ep["url"]] if "url" in ep else []
     for key, flag in (("request", "--request"), ("id_field", "--id-field"), ("subscribe", "--subscribe"),
                       ("key_field", "--key"), ("event_time_field", "--event-time"), ("method", "--method"),
@@ -172,7 +172,7 @@ def sample_hosts(resolved: dict, limit: int) -> dict:
 
 
 def probe_minutes(n_targets: int, cex_args: list) -> float:
-    """Run time implied by the probe options (cex_ws defaults where not given)."""
+    """Run time implied by the probe options (cex_latency defaults where not given)."""
     opt = {"--count": 200, "--warmup": 2, "--interval-ms": 25}
     for i, arg in enumerate(cex_args[:-1]):
         if arg in opt:
@@ -510,7 +510,7 @@ def compare(dirs: list, min_diff_us: float = 5.0, weights: dict = None) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
-    r = sub.add_parser("run", help="run cex_ws on all instances at the same start time and collect results")
+    r = sub.add_parser("run", help="run cex_latency on all instances at the same start time and collect results")
     r.add_argument("mode", nargs="?", choices=["probe", "ws", "http", "stream"], help="default: from --profile/--endpoint")
     r.add_argument("--profile", help="targets/*.toml describing the exchange's endpoints")
     r.add_argument("--endpoint", help="measure this profile endpoint with its own protocol (default: probe all)")
@@ -527,7 +527,7 @@ def main() -> None:
     c.add_argument("dirs", nargs="+")
     c.add_argument("--min-diff-us", type=float, default=5.0, help="smaller winner leads are reported as negligible")
     c.add_argument("--weights", help="role weights for the combined score, e.g. order=0.7,md=0.3 (default: profile, else equal)")
-    # Everything after the first "--" is passed to cex_ws untouched
+    # Everything after the first "--" is passed to cex_latency untouched
     argv = sys.argv[1:]
     cut = argv.index("--") if "--" in argv else len(argv)
     a = p.parse_args(argv[:cut])

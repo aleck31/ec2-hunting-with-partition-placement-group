@@ -54,7 +54,7 @@ scripts/hunt.py run --profile $P --endpoint ws-api --ip <ip>       # confirm on 
 scripts/hunt.py compare results/<run-1> results/<run-2>            # repeat at other times; the winner should hold
 ```
 
-Each run starts `cex_ws` on every instance via SSM, collects the samples through S3 into `results/<run-id>/` and prints the ranking, ending with a suggested `keep_instances`. Endpoints come from a [target profile](docs/target-profiles.md). [docs/measurement.md](docs/measurement.md) covers the modes, how to read the report, how many samples to take and the exchange's rate limits.
+Each run starts `cex_latency` on every instance via SSM, collects the samples through S3 into `results/<run-id>/` and prints the ranking, ending with a suggested `keep_instances`. Endpoints come from a [target profile](docs/target-profiles.md). [docs/measurement.md](docs/measurement.md) covers the modes, how to read the report, how many samples to take and the exchange's rate limits.
 
 ### 4. Keep the winner
 
@@ -81,11 +81,11 @@ Each `hunt.py` run leaves its files in `/home/ec2-user/results/<run-id>/` on the
 ```bash
 terraform test                          # mock AWS provider; needs sources/source.tar.gz
 python3 -m unittest tests/test_hunt.py
-cd sources/cex_ws && cargo test
+cd sources/cex_latency && cargo test
 ```
 
 Provider versions are locked in `.terraform.lock.hcl` (AWS provider 6.73.0); upgrade deliberately with `terraform init -upgrade` and commit the lock file.
 
 `cargo run --release -- probe --targets <ip>` runs a mode locally (`--help` per mode); behind a proxy or VPN, TCP figures only reach the proxy.
 
-Layout: Terraform at the root, `scripts/` (boot script and `hunt.py`), `sources/cex_ws/` (Rust client), `targets/` (exchange profiles), `docs/`, `tests/`, `assets/`.
+Layout: Terraform at the root, `scripts/` (boot script and `hunt.py`), `sources/cex_latency/` (Rust client), `targets/` (exchange profiles), `docs/`, `tests/`, `assets/`.
