@@ -4,6 +4,8 @@ aws_availability_zone_id = "apne1-az4"
 s3_bucket                = "your-s3-bucket-name"
 
 # Optional - uncomment to override defaults
+# instance_type          = "c8i.2xlarge"            # your production type and size
+# instance_count         = 7                        # spread round-robin over 7 partitions
 # ami_id                 = "ami-xxxxxxxxxxxxxxxxx"  # your production AMI; default is the latest AL2023 (kernel 6.18)
 # keep_instances         = [3]                      # after hunting: keep only these instance indices
 # aws_region             = "ap-northeast-1"

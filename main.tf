@@ -185,14 +185,14 @@ data "cloudinit_config" "cloudinit_client" {
 }
 
 locals {
-  instance_indices = var.keep_instances != null ? var.keep_instances : range(length(var.main_ec2_instance_type_client_ppg))
+  instance_indices = var.keep_instances != null ? var.keep_instances : range(var.instance_count)
 }
 
-# Keyed by index ("0".."6") so dropping losers via keep_instances doesn't shift the winner's address
+# Keyed by index ("0", "1", ...) so dropping losers via keep_instances doesn't shift the winner's address
 resource "aws_instance" "client_ppg" {
   for_each                             = toset([for i in local.instance_indices : tostring(i)])
   ami                                  = var.ami_id != null ? var.ami_id : data.aws_ami.amazon_linux_2023[0].image_id
-  instance_type                        = var.main_ec2_instance_type_client_ppg[tonumber(each.key)]
+  instance_type                        = var.instance_type
   subnet_id                            = aws_subnet.public.id
   user_data                            = data.cloudinit_config.cloudinit_client.rendered
   vpc_security_group_ids               = [aws_security_group.main.id]
@@ -202,15 +202,15 @@ resource "aws_instance" "client_ppg" {
   hibernation                          = false
   instance_initiated_shutdown_behavior = "terminate"
   placement_group                      = aws_placement_group.partition.name
-  placement_partition_number           = tonumber(each.key) + 1
+  placement_partition_number           = tonumber(each.key) % aws_placement_group.partition.partition_count + 1
 
   cpu_options {
     threads_per_core = 1
   }
 
-  # A new AMI means a relaunch and new user data means a stop/start; both lose the hunted placement
+  # A new AMI means a relaunch, new user data or type a stop/start; all lose the hunted placement
   lifecycle {
-    ignore_changes = [ami, user_data]
+    ignore_changes = [ami, user_data, instance_type]
   }
 
   tags = {

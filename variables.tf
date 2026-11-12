@@ -20,10 +20,21 @@ variable "subnet_cidr_block" {
   default     = "10.0.10.0/24"
 }
 
-variable "main_ec2_instance_type_client_ppg" {
-  description = "List of EC2 instance types for each partition (one per partition)"
-  type        = list(string)
-  default     = ["c6in.2xlarge", "c6in.2xlarge", "c6in.2xlarge", "c6in.2xlarge", "c6in.2xlarge", "c6in.2xlarge", "c6in.2xlarge"]
+variable "instance_type" {
+  description = "Instance type and size to hunt with; use the production one, since changing it later needs a stop/start that loses the placement"
+  type        = string
+  default     = "c8i.2xlarge"
+}
+
+variable "instance_count" {
+  description = "Number of instances to launch, spread round-robin over the 7 partitions; more instances, more placements sampled"
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.instance_count >= 1
+    error_message = "instance_count must be at least 1."
+  }
 }
 
 variable "ami_id" {

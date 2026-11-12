@@ -4,14 +4,14 @@ EC2 Hunting for CEX WebSocket API latency using AWS EC2 instances with partition
 
 ## Overview
 
-This project deploys 7 x `c6in.2xlarge` to measure WebSocket latency to CEX API endpoints. The Rust client connects to specific CEX IPs and measures round-trip latency for market data requests using nanosecond-accurate monotonic timestamping.
+This project deploys a fleet of EC2 instances (default 7 × `c8i.2xlarge`) in a partition placement group to measure WebSocket latency to CEX API endpoints. The Rust client connects to specific CEX IPs and measures round-trip latency for market data requests with monotonic timestamps in µs.
 
 ### The Hunting Path
 ![](assets/hunting-path.png)
 
 ### Architecture
 
-- **EC2 Instances**: 7x c6in.2xlarge instances in partition placement group
+- **EC2 Instances**: `instance_count` × `instance_type` (default 7 × `c8i.2xlarge`), spread round-robin over the 7 partitions
 - **Placement Strategy**: Partition placement group for network isolation
 - **AMI**: your production AMI via `ami_id`, otherwise Amazon Linux 2023 (kernel 6.18)
 - **Region**: ap-northeast-1 (Tokyo)
@@ -70,16 +70,17 @@ Edit `terraform.tfvars` with your values:
 - `aws_vpc_id`: Your target VPC ID
 - `aws_availability_zone_id`: Target availability zone
 - `s3_bucket`: S3 bucket for source code distribution
+- `instance_type`, `instance_count` (optional): the production type and size, and how many placements to sample (default 7 × `c8i.2xlarge`)
 - `ami_id` (optional): the AMI to hunt with, see below
 
 See `variables.tf` for all available options.
 
-#### Hunt with your production AMI
+#### Hunt with your production instance type and AMI
 
-Set `ami_id` to the AMI the winning instance will run in production (e.g. your latency-tuned golden AMI). An instance keeps its host across reboots, but switching to another AMI means launching a new instance, which lands on a new host and throws the hunted placement away. Without `ami_id`, the latest Amazon Linux 2023 AMI with kernel 6.18 is used.
+Set `instance_type` and `ami_id` to what the winning instance will run in production (e.g. your latency-tuned golden AMI). An instance keeps its host across reboots, but changing its type or size needs a stop/start and switching AMI means launching a new instance; both move it to a new host and throw the hunted placement away. Without `ami_id`, the latest Amazon Linux 2023 AMI with kernel 6.18 is used.
 
 - The AMI must be x86_64 with cloud-init, AWS CLI v2 (to fetch the source from S3) and SSM Agent (the only access path). `scripts/client.sh` is written for Amazon Linux 2023; on other distributions its tuning steps may fail.
-- Existing instances ignore later changes to `ami_id` or to the default AMI. To re-hunt with a new AMI, run `terraform apply -replace='aws_instance.client_ppg["N"]'` per instance, or destroy and apply again.
+- Existing instances ignore later changes to `instance_type`, `ami_id` or the default AMI. To re-hunt with a new type or AMI, run `terraform apply -replace='aws_instance.client_ppg["N"]'` per instance, or destroy and apply again.
 - If the AMI already sets `isolcpus`, `client.sh` leaves the kernel command line unchanged and the benchmark runs on the AMI's isolated cores.
 
 ### 3. Deploy Infrastructure
@@ -164,7 +165,7 @@ terraform apply
 
 To protect the winner's placement:
 - Only reboot it. Stop/start, changing instance type, size, CPU options, user data, placement group or tenancy moves it to another host, so hunt with the production instance type, size and AMI.
-- Later edits to `ami_id` or `scripts/` are ignored for existing instances, so re-applying doesn't replace them; they apply to newly launched instances only.
+- Later edits to `instance_type`, `ami_id` or `scripts/` are ignored for existing instances, so re-applying doesn't replace them; they apply to newly launched instances only.
 - To update the Rust client on running instances, run `sh pack_source.sh` and `terraform apply`, then reboot them: the boot script rebuilds when the source changed.
 - `terraform destroy` removes everything, including the winner.
 - Re-hunt periodically, as exchange endpoints and AWS capacity change over time: remove `keep_instances` and apply to launch fresh instances alongside the winner.

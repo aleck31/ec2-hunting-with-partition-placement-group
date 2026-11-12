@@ -24,15 +24,31 @@ run "hunt" {
   }
 }
 
-run "ami_change_keeps_instances" {
+run "input_changes_keep_instances" {
   command = plan
   variables {
-    ami_id = "ami-0123456789abcdef0"
+    ami_id        = "ami-0123456789abcdef0"
+    instance_type = "c7i.2xlarge"
   }
-  # The mock provider doesn't model ForceNew, so check that the planned AMI stays at the deployed one
+  # The mock provider doesn't model ForceNew or stop/start, so check that planned values stay at the deployed ones
   assert {
     condition     = aws_instance.client_ppg["0"].ami != "ami-0123456789abcdef0"
     error_message = "Changing the AMI would replace hunted instances"
+  }
+  assert {
+    condition     = aws_instance.client_ppg["0"].instance_type == "c8i.2xlarge"
+    error_message = "Changing the instance type would stop/start hunted instances"
+  }
+}
+
+run "more_instances_than_partitions" {
+  command = plan
+  variables {
+    instance_count = 9
+  }
+  assert {
+    condition     = aws_instance.client_ppg["7"].placement_partition_number == 1 && aws_instance.client_ppg["8"].placement_partition_number == 2
+    error_message = "Instances beyond 7 must wrap around the partitions"
   }
 }
 
