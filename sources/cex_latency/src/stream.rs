@@ -45,7 +45,7 @@ struct Arrival {
     recv_wall_us: u64,
 }
 
-/// Records when each stream event arrives (wall clock), so instances can be compared on the same events.
+/// Records when each stream event arrives on this host's wall clock, next to the exchange's event time.
 pub async fn run(args: StreamArgs) -> Result<()> {
     if args.url.host_str().is_none() || args.url.port_or_known_default().is_none() {
         return Err("--url needs a host and a ws:// or wss:// scheme".into());
@@ -78,7 +78,7 @@ pub async fn run(args: StreamArgs) -> Result<()> {
         loop {
             tokio::select! {
                 msg = ws.next() => {
-                    // Wall clock, not Instant: arrivals are compared across machines
+                    // Wall clock to line up with the exchange's event time; too coarse to compare hosts
                     let recv_wall_us = common::wall_us();
                     match msg {
                         Some(Ok(Message::Text(data))) => {
@@ -105,10 +105,11 @@ pub async fn run(args: StreamArgs) -> Result<()> {
         }
         let got = &arrivals[before..];
         // Exchange event times are ms and include the clock offset, so this is only a sanity check
-        let lag: Vec<u64> = got
+        // Signed: clock offset and ms-truncated event times can put the receipt before the event
+        let lag: Vec<i64> = got
             .iter()
             .filter(|a| a.event_time_ms > 0)
-            .map(|a| a.recv_wall_us.saturating_sub(a.event_time_ms * 1000))
+            .map(|a| a.recv_wall_us as i64 - (a.event_time_ms * 1000) as i64)
             .collect();
         println!(
             "connection {c}: {} events ({:.0}/s) tcp_connect={}µs, receive minus event time in µs: {}",

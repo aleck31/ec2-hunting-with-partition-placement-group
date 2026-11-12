@@ -115,7 +115,7 @@ pub async fn run(args: ProbeArgs) -> Result<()> {
     println!(
         "TCP handshake RTT per target in µs (kernel SYN/SYN-ACK sample; connect() time in brackets):"
     );
-    let mut all = Vec::new();
+    let mut all: Vec<u64> = Vec::new();
     for target in &targets {
         let measured: Vec<&Sample> = samples
             .iter()

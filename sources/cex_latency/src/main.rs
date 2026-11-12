@@ -22,7 +22,7 @@ enum Command {
     Ws(ws::WsArgs),
     /// HTTP request round trips on keep-alive connections (REST APIs)
     Http(http::HttpArgs),
-    /// Arrival times of stream events, compared across instances
+    /// Arrival times of stream events; reported, not ranked (instance clocks agree only to ~100 µs)
     Stream(stream::StreamArgs),
 }
 

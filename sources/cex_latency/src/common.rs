@@ -67,11 +67,13 @@ impl Grid {
     }
 
     /// Sleeps to just before the slot, then spins onto it. Returns false if already half an interval late.
+    /// The spin yields to the runtime, which polls I/O before resuming it, so a response arriving meanwhile
+    /// (ws mode waits in a select! with the socket) is read and timestamped at once.
     pub async fn wait(&self, slot: u64) -> bool {
         let deadline = self.deadline(slot);
         tokio::time::sleep_until(deadline.checked_sub(SPIN).unwrap_or(deadline).into()).await;
         while Instant::now() < deadline {
-            std::hint::spin_loop();
+            tokio::task::yield_now().await;
         }
         Instant::now().saturating_duration_since(deadline) <= self.interval / 2
     }
@@ -124,7 +126,7 @@ pub fn id_of(json: &serde_json::Value, field: &str) -> Option<String> {
 }
 
 /// "n=… min=… p50=… … max=…" in µs; a percentile is shown only with at least 5 samples above it
-pub fn stats(values: &[u64]) -> String {
+pub fn stats<T: Copy + Ord + std::fmt::Display>(values: &[T]) -> String {
     if values.is_empty() {
         return "n=0".into();
     }
@@ -207,6 +209,6 @@ mod tests {
     fn stats_hides_percentiles_without_enough_samples_above() {
         let values: Vec<u64> = (1..=100).collect();
         assert_eq!(stats(&values), "n=100 min=1 p50=51 p90=90 max=100");
-        assert_eq!(stats(&[]), "n=0");
+        assert_eq!(stats::<u64>(&[]), "n=0");
     }
 }
