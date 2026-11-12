@@ -64,6 +64,42 @@ run "partitions_wrap_and_unplaced_follow" {
   }
 }
 
+run "keep_winner_and_new_batch" {
+  variables {
+    keep_instances = [3]
+    index_offset   = 7
+  }
+  assert {
+    condition     = toset(keys(output.instances)) == toset(["3", "7", "8", "9", "10", "11", "12", "13"]) && output.instances["3"].id == run.hunt.instances["3"].id
+    error_message = "A new batch must take fresh indices and leave the kept instance unchanged"
+  }
+  assert {
+    condition     = output.instances["7"].partition == 1 && output.instances["13"].partition == 7
+    error_message = "A new batch must continue round-robin over the partitions"
+  }
+}
+
+run "keep_from_two_batches" {
+  command = plan
+  variables {
+    keep_instances = [3, 12]
+    index_offset   = 14
+  }
+  assert {
+    condition     = output.instances["12"].in_placement_group && output.instances["12"].id == run.keep_winner_and_new_batch.instances["12"].id
+    error_message = "An instance kept from a later batch must stay unchanged and in the placement group"
+  }
+}
+
+run "new_batch_overlapping_a_kept_index_is_refused" {
+  command = plan
+  variables {
+    keep_instances = [3, 8]
+    index_offset   = 7
+  }
+  expect_failures = [aws_instance.client_ppg]
+}
+
 run "keep_winner" {
   variables {
     keep_instances = [3]

@@ -56,14 +56,20 @@ scripts/hunt.py compare results/<run-1> results/<run-2>            # repeat at o
 
 Each run starts `cex_latency` on every instance via SSM, collects the samples through S3 into `results/<run-id>/` and prints the ranking, ending with a suggested `keep_instances`. Endpoints come from a [target profile](docs/target-profiles.md). [docs/measurement.md](docs/measurement.md) covers the modes, how to read the report, how many samples to take and the exchange's rate limits.
 
-### 4. Keep the winner
+### 4. Keep the winner, or keep and hunt another batch
 
-Set `keep_instances = [N]` in `terraform.tfvars` (`terraform output instances` maps indices to instance IDs), check that `terraform plan` only destroys the others, then `terraform apply`.
+Set in `terraform.tfvars` (`terraform output instances` maps indices to instance IDs), check that `terraform plan` only destroys or adds what you expect, then `terraform apply`:
 
-- Only reboot the winner; stop/start, a new type, size, CPU options or user data moves it to another host.
-- Re-applying never replaces existing instances: changes to `instance_type`, `ami_id` or `scripts/` only reach new ones. To update the client on running instances, run `sh pack_source.sh` and `terraform apply`, then reboot them.
-- Re-hunt now and then, as exchange endpoints and capacity change: remove `keep_instances` and apply. To re-hunt with another type or AMI, replace the instances (`terraform apply -replace='aws_instance.client_ppg["N"]'`) or destroy and apply.
-- `terraform destroy` removes everything, the winner included.
+```hcl
+keep_instances = [3]      # keep the winner, terminate the rest
+index_offset   = 7        # optional: also launch a new batch from index 7, next to the kept instance
+```
+
+A new batch takes the next indices, continues round-robin over the partitions and is ranked with the kept instances on the next run. `index_offset` must be above every kept index; Terraform refuses the plan otherwise. Repeat (keep the best, raise `index_offset`) until the winner is good enough.
+
+- Only reboot a kept instance; stop/start, a new type, size, CPU options or user data moves it to another host.
+- Re-applying never replaces existing instances: changes to `instance_type`, `ami_id` or `scripts/` only reach new ones. To update the client on running instances, run `sh pack_source.sh` and `terraform apply`, then reboot them. To hunt with another type or AMI, start a new fleet.
+- `terraform destroy` removes everything, kept instances included.
 
 ## Troubleshooting
 

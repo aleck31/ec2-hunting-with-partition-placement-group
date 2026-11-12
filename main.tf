@@ -194,7 +194,12 @@ data "cloudinit_config" "cloudinit_client" {
 }
 
 locals {
-  instance_indices = var.keep_instances != null ? var.keep_instances : range(var.instance_count + var.unplaced_instance_count)
+  # The current batch starts at index_offset (0 for the first fleet); kept instances come from earlier batches
+  batch_start      = var.index_offset == null ? 0 : var.index_offset
+  batch            = range(local.batch_start, local.batch_start + var.instance_count + var.unplaced_instance_count)
+  instance_indices = var.keep_instances == null ? local.batch : concat(var.keep_instances, var.index_offset == null ? [] : local.batch)
+  # The first instance_count of the batch go into the placement group; kept instances keep theirs (ignore_changes)
+  in_pg = { for i in distinct(local.instance_indices) : tostring(i) => i < local.batch_start || i - local.batch_start < var.instance_count }
 }
 
 data "aws_ec2_instance_type" "selected" {
@@ -215,8 +220,8 @@ resource "aws_instance" "client_ppg" {
   hibernation                          = false
   instance_initiated_shutdown_behavior = "terminate"
   # Indices from instance_count on launch outside the placement group, sampling hosts beyond its racks
-  placement_group            = tonumber(each.key) < var.instance_count ? aws_placement_group.partition.name : null
-  placement_partition_number = tonumber(each.key) < var.instance_count ? tonumber(each.key) % aws_placement_group.partition.partition_count + 1 : null
+  placement_group            = local.in_pg[each.key] ? aws_placement_group.partition.name : null
+  placement_partition_number = local.in_pg[each.key] ? tonumber(each.key) % aws_placement_group.partition.partition_count + 1 : null
 
   # Hyper-threading off; without core_count the provider drops threads_per_core and launches with SMT on
   cpu_options {
@@ -226,11 +231,16 @@ resource "aws_instance" "client_ppg" {
 
   # Changing any of these relaunches or stop/starts the instance, which loses the hunted placement
   lifecycle {
-    ignore_changes = [ami, user_data, instance_type, cpu_options, placement_group, placement_partition_number]
+    ignore_changes = [ami, user_data, instance_type, cpu_options, placement_group, placement_partition_number, tags["Name"]]
+
+    precondition {
+      condition     = var.index_offset == null || (var.keep_instances != null && alltrue([for k in coalesce(var.keep_instances, []) : k < var.index_offset]))
+      error_message = "index_offset needs keep_instances and must be above every kept index, or new instances would take kept instances' places."
+    }
   }
 
   tags = {
-    Name = tonumber(each.key) < var.instance_count ? "client-ppg-${each.key}" : "client-nopg-${each.key}"
+    Name = local.in_pg[each.key] ? "client-ppg-${each.key}" : "client-nopg-${each.key}"
   }
 }
 
@@ -253,7 +263,7 @@ output "instances" {
     for idx, instance in aws_instance.client_ppg : idx => {
       id                 = instance.id
       partition          = instance.placement_partition_number
-      in_placement_group = tonumber(idx) < var.instance_count
+      in_placement_group = contains(coalesce(var.keep_instances, []), tonumber(idx)) ? instance.placement_group == aws_placement_group.partition.name : local.in_pg[idx]
     }
   }
 }

@@ -47,7 +47,7 @@ Use documented endpoints and ports only, within the exchange's published limits 
 
 ## Placement group
 
-A partition placement group keeps up to 7 partitions per AZ on separate sets of racks, so the fleet samples different racks, but it doesn't guarantee different spines or buildings. To sample more widely, add `unplaced_instance_count` instances outside the group, or launch in batches (raise `instance_count` and apply again later). The group also narrows the capacity pool, so launches hit insufficient capacity (ICE) more often, especially for metal sizes.
+A partition placement group keeps up to 7 partitions per AZ on separate sets of racks, so the fleet samples different racks, but it doesn't guarantee different spines or buildings. To sample more widely, add `unplaced_instance_count` instances outside the group, or keep the best and launch another batch next to them (`keep_instances` with `index_offset`). The group also narrows the capacity pool, so launches hit insufficient capacity (ICE) more often, especially for metal sizes.
 
 ## Host tuning
 

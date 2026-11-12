@@ -56,8 +56,14 @@ variable "ami_id" {
 }
 
 variable "keep_instances" {
-  description = "After hunting, indices of the instances to keep (e.g. [3]); the others are terminated. Null keeps all"
+  description = "After hunting, indices of the instances to keep (e.g. [3]); the others are terminated unless they are in the new batch. Null: the fleet is one batch"
   type        = list(number)
+  default     = null
+}
+
+variable "index_offset" {
+  description = "With keep_instances, first index of a new batch launched next to the kept instances; must be above every kept index. Null: no new batch"
+  type        = number
   default     = null
 }
 
