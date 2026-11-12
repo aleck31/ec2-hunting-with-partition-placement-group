@@ -15,13 +15,14 @@ This project deploys 7 x `c6in.2xlarge` to measure WebSocket latency to CEX API 
 - **Placement Strategy**: Partition placement group for network isolation
 - **AMI**: your production AMI via `ami_id`, otherwise Amazon Linux 2023 (kernel 6.18)
 - **Region**: ap-northeast-1 (Tokyo)
-- **Performance Optimizations**:
-  - Hyper-threading disabled
-  - Turbo Boost disabled
-  - CPU governor set to performance mode
-  - CPU isolation (cores 0-1) for benchmark workload
+- **Performance Optimizations** (`scripts/client.sh`, logged at every boot with a `HUNT:` prefix):
+  - Hyper-threading disabled (`threads_per_core = 1`)
+  - CPU isolation: cores 2..N-1 isolated via kernel boot parameters (`isolcpus`, `nohz_full`, `rcu_nocbs`), set on first boot followed by one reboot; the benchmark is pinned to them
+  - Housekeeping: cores 0-1 take all device interrupts (`irqaffinity`, irqbalance disabled), unbound kernel workqueues and system services
+  - Noise reduction: `idle=poll`, `clocksource=tsc`, NMI watchdog, audit and THP off, socket busy polling, NIC interrupt moderation off
+  - Turbo Boost and CPU governor: set only where the platform exposes them, which on EC2 means bare metal; elsewhere frequency is managed by the platform
 
-> **Note**: The goal is measurement consistency — ensuring observed latency differences come from network path placement, not CPU frequency fluctuation. Turbo Boost is disabled and CPU governor is locked to `performance` to keep frequency stable across all instances.
+> **Note**: The goal is measurement consistency — ensuring observed latency differences come from network path placement, not host noise such as scheduler, interrupt or idle-state jitter.
 
 ## Prerequisites
 
@@ -83,7 +84,7 @@ Set `ami_id` to the AMI the winning instance will run in production (e.g. your l
 
 - The AMI must be x86_64 with cloud-init, AWS CLI v2 (to fetch the source from S3) and SSM Agent (the only access path). `scripts/client.sh` is written for Amazon Linux 2023; on other distributions its tuning steps may fail.
 - Existing instances ignore later changes to `ami_id` or to the default AMI. To re-hunt with a new AMI, run `terraform apply -replace='aws_instance.client_ppg["N"]'` per instance, or destroy and apply again.
-- If the AMI isolates CPUs, pin the benchmark to those cores (`cat /sys/devices/system/cpu/isolated`) instead of `0-1` in step 4.
+- If the AMI already sets `isolcpus`, `client.sh` leaves the kernel command line unchanged and the benchmark runs on the AMI's isolated cores.
 
 ### 3. Deploy Infrastructure
 
@@ -100,9 +101,11 @@ This provisions:
 - IAM roles and instance profiles
 - EC2 instances with cloud-init scripts
 
-The EC2 will run the `scripts/client.sh` automatically to 
-- setup basic Kernel optimization and isolate `0-1` CPU for running the Rust program
-- download Rust program from S3 and build the Rust program binary
+On every boot each instance runs `scripts/client.sh`, which:
+- applies the host tuning above; on first boot it sets the CPU isolation boot parameters and reboots once
+- downloads the Rust source from S3 and builds it when the source changed
+
+Wait until `grep HUNT: /var/log/cloud-init-output.log` shows `cmdline: active` (or `the AMI sets its own isolcpus`) before benchmarking.
 
 
 ### 4. Access Instances
@@ -124,14 +127,14 @@ Run the Rust program simultaneously on all instances:
 TARGET_IP=<target_ip_address>
 
 # Run on a single instance via SSM session
-sudo nohup taskset -c 0-1 /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 &
+sudo nohup taskset -c "$(cat /sys/devices/system/cpu/isolated)" /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP > "/home/ec2-user/$(ec2-metadata -i | awk '{print $2}').log" 2>&1 &
 
 # Or run on all instances at once via SSM send-command
 INSTANCE_IDS=$(terraform output -json instance_id_and_partition_id_mapping | jq -r 'keys[]')
 aws ssm send-command \
   --targets "Key=instanceids,Values=$(echo $INSTANCE_IDS | tr ' ' ',')" \
   --document-name "AWS-RunShellScript" \
-  --parameters "commands=['sudo nohup taskset -c 0-1 /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP > /home/ec2-user/\$(ec2-metadata -i | awk \"{print \\$2}\").log 2>&1 &']" \
+  --parameters "commands=['sudo nohup taskset -c \$(cat /sys/devices/system/cpu/isolated) /share/bench/sources/cex_ws/target/release/cex_ws $TARGET_IP > /home/ec2-user/\$(ec2-metadata -i | awk \"{print \\$2}\").log 2>&1 &']" \
   --region ap-northeast-1
 ```
 
@@ -165,6 +168,7 @@ terraform apply
 To protect the winner's placement:
 - Only reboot it. Stop/start, changing instance type, size, CPU options, user data, placement group or tenancy moves it to another host, so hunt with the production instance type, size and AMI.
 - Later edits to `ami_id` or `scripts/` are ignored for existing instances, so re-applying doesn't replace them; they apply to newly launched instances only.
+- To update the Rust client on running instances, run `sh pack_source.sh` and `terraform apply`, then reboot them: the boot script rebuilds when the source changed.
 - `terraform destroy` removes everything, including the winner.
 - Re-hunt periodically, as exchange endpoints and AWS capacity change over time: remove `keep_instances` and apply to launch fresh instances alongside the winner.
 
@@ -208,14 +212,14 @@ ps aux | grep cex_ws
 ### Verify CPU Configuration
 
 ```bash
-# Check hyper-threading status
-cat /sys/devices/system/cpu/cpu*/topology/thread_siblings_list
+# What the boot script applied, skipped or failed (latest boot last)
+grep HUNT: /var/log/cloud-init-output.log
 
-# Check CPU governor
-cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+# Isolated cores and active boot parameters
+cat /sys/devices/system/cpu/isolated /proc/cmdline
 
-# Check turbo boost
-cat /sys/devices/system/cpu/intel_pstate/no_turbo
+# Interrupts per CPU: device IRQs should only count up on cores 0-1
+cat /proc/interrupts
 ```
 
 ## Project Structure
