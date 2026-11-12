@@ -30,7 +30,7 @@ Measurement follows two rules: rank by a network-only metric that uses the same 
 
 - Terraform >= 1.7
 - AWS CLI v2 with credentials for the target account; [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) for interactive sessions
-- Python 3.9+ for `scripts/hunt.py`
+- Python 3.11+ for `scripts/hunt.py`
 - An existing VPC and S3 bucket in the region
 - A Running On-Demand vCPU quota well above the fleet size: hunting launches every instance at once
 - Rust toolchain (for local testing only)
@@ -46,6 +46,7 @@ dig +short <ws-fapi.cex-endpoint.com>            # candidate IPs
 cargo run --release -- probe --targets <ip1>,<ip2> --count 20
 cargo run --release -- ws <ip> --url wss://<ws-fapi.cex-endpoint.com>/ws-fapi/v1 --samples 10 --connections 2 --interval-ms 200
 cargo run --release -- stream <ip> --url wss://<fstream.cex-endpoint.com>/ws/btcusdt@bookTicker --seconds 5
+cargo run --release -- http <ip> --url https://<fapi.cex-endpoint.com>/fapi/v1/time --samples 10 --interval-ms 200
 ```
 
 Kernel TCP figures are reported on Linux only. Behind a local proxy or VPN, TCP figures only cover the hop to the proxy; measure on EC2.
@@ -108,21 +109,28 @@ Wait until `grep HUNT: /var/log/cloud-init-output.log` shows `cmdline: active` (
 
 ### 4. Measure
 
-`scripts/hunt.py run` starts `cex_ws` on every instance via SSM with one shared start time, waits for it, gathers each instance's samples, clock status and metadata under `s3://<bucket>/results/<run-id>/<instance-id>/`, downloads them to `results/<run-id>/` and prints the ranking. Arguments after `--` go to `cex_ws`.
+`scripts/hunt.py run` starts `cex_ws` on every instance via SSM with one shared start time, waits for it, gathers each instance's samples, clock status and metadata under `s3://<bucket>/results/<run-id>/<instance-id>/`, downloads them to `results/<run-id>/` and prints the ranking. The exchange and its endpoints come from a [target profile](#target-profiles); arguments after `--` go to `cex_ws`.
 
 ```bash
-# 1. Rank by network-only RTT to every IP behind the endpoints (resolved repeatedly from inside the VPC)
-scripts/hunt.py run probe --hosts ws-fapi.binance.com,fstream.binance.com -- --count 500
+P=targets/binance-usdm.toml
 
-# 2. Confirm on application round trips over the IP you will use in production, over several connections
-scripts/hunt.py run ws -- <ip> --url wss://ws-fapi.binance.com/ws-fapi/v1 --samples 1200 --connections 6
+# 1. Rank by network-only RTT to the IPs behind every endpoint of the profile
+scripts/hunt.py run --profile $P -- --count 200 --interval-ms 50
+
+# 2. Confirm on each endpoint's own protocol, over the IP you will pin in production
+scripts/hunt.py run --profile $P --endpoint ws-api --ip <ip> -- --samples 1200 --connections 6
+scripts/hunt.py run --profile $P --endpoint rest --ip <ip>
 
 # 3. Compare market-data arrival: who receives the same stream events first
-scripts/hunt.py run stream -- <stream-ip> --url wss://fstream.binance.com/ws/btcusdt@bookTicker --seconds 60
+scripts/hunt.py run --profile $P --endpoint market-stream -- --seconds 60
 
 # Repeat at different times of day, then check that the winner holds across runs
 scripts/hunt.py compare results/<run-1> results/<run-2> results/<run-3>
 ```
+
+Without a profile, give the mode and every `cex_ws` argument yourself, e.g. `scripts/hunt.py run probe --hosts ws-fapi.binance.com` or `scripts/hunt.py run ws -- <ip> --url wss://...`.
+
+Hostnames are resolved on an instance, both through the VPC resolver and by asking the zone's authoritative name servers directly: DNS answers can depend on where the query comes from (from outside AWS, `fapi.binance.com` may resolve to CloudFront), each answer is a rotating subset, and the VPC resolver caches one subset for the TTL. Some hosts front hundreds of IPs (Binance `fstream`: ~470), so a probe takes a fixed-seed sample of `--max-targets-per-host` (16) per host, and refuses to start if it would run longer than `--max-minutes` (10).
 
 Reading the report:
 - **median Δ vs fleet**: for every slot (probe, ws) or event (stream), each instance's value minus the fleet median at that same moment, then the median per instance with a bootstrap 95% confidence interval. Pairing by time cancels load swings on the exchange side, which are often larger than the differences between placements.
@@ -166,8 +174,9 @@ All modes share `--start-at <unix-ms>` (a time grid common to all instances; `hu
 
 | Mode | Measures | Key options |
 |---|---|---|
-| `probe` | TCP handshake RTT: the kernel's RTT sample from SYN/SYN-ACK (`TCP_INFO`), free of user-space wakeup delay; `connect()` time as fallback. Targets are probed round-robin, one handshake per slot, each on a new connection | `--targets`, `--count` (default 200 per target), `--warmup` (2, discards ARP/route/conntrack setup), `--interval-ms` (25) |
-| `ws` | App round trip on established WebSocket connections: from just before the request write to the moment the response frame is read, before JSON parsing. Also kernel srtt and retransmits | `--url`, `--request` (JSON with `{id}`, which must come back as the response's string `id`; default Binance-style `depth`), `--samples` (600 in total), `--connections` (3, sequential), `--warmup` (5 per connection), `--interval-ms` (100) |
+| `probe` | TCP handshake RTT: the kernel's RTT sample from SYN/SYN-ACK (`TCP_INFO`), free of user-space wakeup delay; `connect()` time as fallback. Targets are probed round-robin, one handshake per slot, each on a new connection. Works for any TCP service (HTTPS, WebSocket, FIX) | `--targets` (`IP` or `IP:port`, `--port` default 443), `--count` (default 200 per target), `--warmup` (2, discards ARP/route/conntrack setup), `--interval-ms` (25) |
+| `ws` | App round trip on established WebSocket connections: from just before the request write to the moment the response frame is read, before JSON parsing. Also kernel srtt and retransmits | `--url`, `--request` (JSON with `{id}`, replaced by the slot number; default Binance-style `depth`), `--id-field` (top-level response field echoing it, string or number; `id`), `--samples` (600 in total), `--connections` (3, sequential), `--warmup` (5 per connection), `--interval-ms` (100) |
+| `http` | HTTP request round trip on keep-alive connections: from the request write to the parsed response head. TCP goes straight to the target IP; TLS SNI and `Host` come from the URL | `--url`, `--method` (GET), `--body` (with `{id}`), `--header` (repeatable), `--samples`, `--connections`, `--warmup`, `--interval-ms` as for `ws` |
 | `stream` | Wall-clock arrival time of each stream event, compared across instances on the same event key | `--url`, `--subscribe`, `--key` (`u`, Binance bookTicker update ID), `--event-time` (`E`), `--seconds` (30 per connection), `--connections` (2) |
 
 What the numbers mean and where they stop:
@@ -176,7 +185,44 @@ What the numbers mean and where they stop:
 - **Several connections.** A target IP can front several gateways; each connection lands on one. `--connections` and the per-connection p50s in the report show whether results depend on the backend rather than on placement.
 - **Stream arrival depends on clock sync.** Instances use Amazon Time Sync through chrony; the report includes each instance's error bound (`|offset| + root delay / 2 + root dispersion`) and treats smaller leads as not significant. Hardware clocks (PHC) and NIC hardware timestamps, which would remove that error and the host stack's noise, need a precision-time placement group, which a partition placement group cannot be combined with.
 - **Not measured: the order path.** Order round trips need signed requests on a funded account and real orders; testnets run on different infrastructure, so they say nothing about placement.
-- **Be gentle with probes.** Each probe opens and closes a TCP connection; with the defaults that is 40 connections per second per instance. Exchanges may rate-limit or block aggressive connection churn.
+- **Be gentle with probes.** Each probe opens and closes a TCP connection; with the defaults that is 40 connections per second per instance (`--interval-ms 50` halves it). Exchanges may rate-limit or block aggressive connection churn; `--max-targets-per-host` and `--max-minutes` keep runs bounded.
+
+## Target Profiles
+
+A profile in `targets/` describes one exchange: its endpoints and how to measure each. `targets/binance-usdm.toml` is a worked example; copy it for another exchange.
+
+```toml
+name = "my-exchange"
+
+[[endpoints]]
+name = "ws-api"              # used by --endpoint and in reports
+protocol = "ws"              # tcp | ws | http | stream
+url = "wss://ws.example.com/v1"
+request = '{"id":"{id}","op":"ping"}'
+id_field = "id"
+
+[[endpoints]]
+name = "md"
+protocol = "stream"
+url = "wss://stream.example.com/ws"
+subscribe = '{"op":"subscribe","args":["book.BTCUSDT"]}'
+key_field = "seq"            # same value on every instance for the same event
+event_time_field = "ts"
+
+[[endpoints]]
+name = "rest"
+protocol = "http"
+url = "https://api.example.com/v1/time"
+method = "GET"               # optional: body, headers = ["Name: value"]
+
+[[endpoints]]
+name = "fix"
+protocol = "tcp"             # handshake RTT only
+host = "fix.example.com"
+port = 9000
+```
+
+Every endpoint may also set `args = [...]`, extra `cex_ws` options for that endpoint. `hunt.py run --profile P` probes the TCP handshake to the IPs of all endpoints (each on its own port, labelled by endpoint in the report); `--endpoint NAME` runs that endpoint's own protocol. Before adding an exchange, check that its endpoints are not behind a CDN (see [who answers the SYN](#measurement-modes)) and that the request methods are public.
 
 ## What the Placement Group Gives You
 
@@ -245,15 +291,18 @@ cd sources/cex_ws && cargo test
 │   ├── client.sh              # EC2 boot script: host tuning and client build
 │   ├── cloud-config.yaml      # Cloud-init configuration
 │   └── hunt.py                # Synchronized runs, result collection and ranking
+├── targets/
+│   └── binance-usdm.toml      # Target profile: Binance USDⓈ-M futures endpoints
 ├── tests/
 │   ├── hunt.tftest.hcl        # Offline `terraform test` checks (mock AWS)
-│   └── test_hunt.py           # Ranking and significance checks for hunt.py
+│   └── test_hunt.py           # Ranking, significance and profile checks for hunt.py
 └── sources/
     └── cex_ws/                # Rust measurement client
         └── src/
-            ├── main.rs        # CLI: probe, ws, stream
-            ├── common.rs      # Time grid, stats, CSV, TCP_INFO
+            ├── main.rs        # CLI: probe, ws, http, stream
+            ├── common.rs      # Time grid, connection layout, stats, CSV, TCP_INFO
             ├── probe.rs       # TCP handshake RTT
             ├── ws.rs          # WebSocket round trips
+            ├── http.rs        # HTTP round trips
             └── stream.rs      # Stream event arrival
 ```

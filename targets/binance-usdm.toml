@@ -1,0 +1,34 @@
+# Binance USDⓈ-M futures. From a VPC in ap-northeast-1 all three hosts resolve to EC2 addresses in Tokyo, apne1-az4
+# (from outside AWS, fapi.binance.com can resolve to CloudFront instead). fstream fronts ~470 rotating IPs, so probes
+# sample them; ws-fapi has 4.
+name = "binance-usdm"
+
+# WebSocket API, the order gateway. Order methods need signed requests, so this measures a public method on it.
+[[endpoints]]
+name = "ws-api"
+protocol = "ws"
+url = "wss://ws-fapi.binance.com/ws-fapi/v1"
+request = '{"id":"{id}","method":"depth","params":{"symbol":"BTCUSDT","limit":5}}'
+id_field = "id"
+
+# Market data push; "u" is the order book update ID, identical on every instance for the same update
+[[endpoints]]
+name = "market-stream"
+protocol = "stream"
+url = "wss://fstream.binance.com/ws/btcusdt@bookTicker"
+key_field = "u"
+event_time_field = "E"
+
+# REST API; server time is the lightest request (weight 1). fapi.binance.com is a CNAME to an ALB, which terminates
+# TCP: probes of it only reach the ALB nodes, while the http round trip covers the path through the ALB.
+[[endpoints]]
+name = "rest"
+protocol = "http"
+url = "https://fapi.binance.com/fapi/v1/time"
+
+# Plain TCP endpoints (e.g. a FIX gateway) are probed for handshake RTT only:
+# [[endpoints]]
+# name = "fix"
+# protocol = "tcp"
+# host = "fix.example-exchange.com"
+# port = 9000

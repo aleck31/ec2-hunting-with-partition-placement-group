@@ -71,5 +71,25 @@ class RankingTest(unittest.TestCase):
         self.assertTrue(verdict.endswith("NOT significant"), verdict)
 
 
+class ProfileTest(unittest.TestCase):
+    def setUp(self):
+        self.profile = hunt.load_profile(str(Path(__file__).parent.parent / "targets" / "binance-usdm.toml"))
+        self.eps = {ep["name"]: ep for ep in self.profile["endpoints"]}
+
+    def test_endpoint_becomes_cex_ws_arguments(self):
+        args = hunt.endpoint_args(self.eps["ws-api"])
+        self.assertEqual(args[:2], ["--url", "wss://ws-fapi.binance.com/ws-fapi/v1"])
+        self.assertIn("--id-field", args)
+        self.assertEqual(hunt.endpoint_args(self.eps["market-stream"])[2:], ["--key", "u", "--event-time", "E"])
+
+    def test_probe_targets_cover_every_endpoint_with_its_port(self):
+        tcp = {"name": "fix", "protocol": "tcp", "host": "fix.example", "port": 9000}
+        resolved = {"ws-fapi.binance.com": ["10.0.0.2"], "fapi.binance.com": ["10.0.0.1"], "fix.example": ["10.0.0.1"]}
+        targets, labels = hunt.probe_targets(self.profile["endpoints"] + [tcp], resolved)
+        self.assertEqual(targets, ["10.0.0.1:443", "10.0.0.1:9000", "10.0.0.2:443"])
+        self.assertEqual(labels["10.0.0.1:9000"], "fix")
+        self.assertEqual(labels["10.0.0.2:443"], "ws-api")
+
+
 if __name__ == "__main__":
     unittest.main()
