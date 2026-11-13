@@ -106,5 +106,16 @@ class DrawsTest(unittest.TestCase):
         self.assertIn("(29 draws for 95%)", out.getvalue())
 
 
+class BurstTest(unittest.TestCase):
+    def test_only_slowness_shared_by_the_fleet_counts_as_exchange_side(self):
+        def inst(slow):
+            return {"rows": [{"slot": str(k), "target": "10.0.0.1:443", "warmup": "0", "status": "ok", "connect_us": "0",
+                              "syn_rtt_us": "2500" if k in slow else "300"} for k in range(20)]}
+        # Slots 5 and 6 are slow on most instances; slot 10 only on one host, which must stay in its numbers
+        slots, judged = hunt.burst_slots({"insts": [inst({5, 6, 10}), inst({5, 6}), inst({5})]})
+        self.assertEqual(slots, {5, 6})
+        self.assertEqual(judged, 20)
+
+
 if __name__ == "__main__":
     unittest.main()

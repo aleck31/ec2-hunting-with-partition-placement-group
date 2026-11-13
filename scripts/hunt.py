@@ -34,6 +34,8 @@ BARS = " ▁▂▃▄▅▆▇█"
 # Profile protocol -> cex_latency mode
 MODES = {"tcp": "probe", "ws": "ws", "stream": "stream", "http": "http"}
 DEFAULT_PORTS = {"https": 443, "wss": 443, "http": 80, "ws": 80}
+# A probe slot where the fleet median is this far above the target's run median is slow on the exchange side
+BURST_US = 1000
 
 
 def sh(*args: str) -> str:
@@ -468,6 +470,7 @@ def report(run: dict, min_diff_us: float = 5.0, weights: dict = None) -> list:
     if mode == "probe":
         per_target(run)
         report_roles(run, weights or run["weights"], min_diff_us)
+        report_bursts(run)
         report_draws(run)
     if mode in ("ws", "http"):
         for r in ranked:
@@ -481,13 +484,45 @@ def report(run: dict, min_diff_us: float = 5.0, weights: dict = None) -> list:
     return [r["inst"]["id"] for r in ranked]
 
 
-def target_values(inst: dict) -> dict:
-    """Probe: {target: measured RTTs µs} of one instance."""
+def target_values(inst: dict, skip: frozenset = frozenset()) -> dict:
+    """Probe: {target: measured RTTs µs} of one instance, leaving out the slots in skip."""
     out = {}
     for r in inst["rows"]:
-        if r["status"] == "ok" and r["warmup"] == "0":
+        if r["status"] == "ok" and r["warmup"] == "0" and int(r["slot"]) not in skip:
             out.setdefault(r["target"], []).append(float(r["syn_rtt_us"]) or float(r["connect_us"]))
     return out
+
+
+def deciles(vals: list) -> list:
+    return statistics.quantiles(vals, n=10, method="inclusive") if len(vals) > 1 else vals * 9
+
+
+def burst_slots(run: dict) -> tuple:
+    """Probe slots where most of the fleet was slow at once, i.e. the exchange or the shared path rather than the hosts;
+    returns them and the number of slots with at least two instances to judge by."""
+    by_slot, by_target = {}, {}
+    for inst in run["insts"]:
+        for r in inst["rows"]:
+            if r["status"] == "ok" and r["warmup"] == "0":
+                v = float(r["syn_rtt_us"]) or float(r["connect_us"])
+                by_slot.setdefault(int(r["slot"]), (r["target"], []))[1].append(v)
+                by_target.setdefault(r["target"], []).append(v)
+    base = {t: statistics.median(v) for t, v in by_target.items()}
+    judged = {k: tv for k, tv in by_slot.items() if len(tv[1]) >= 2}
+    return frozenset(k for k, (t, v) in judged.items() if statistics.median(v) > base[t] + BURST_US), len(judged)
+
+
+def report_bursts(run: dict) -> None:
+    slots, judged = burst_slots(run)
+    if not judged:
+        return
+    line = f"  exchange-side slow slots: {len(slots) / judged:.1%} (most of the fleet over {BURST_US} µs above the target's median at once, so not the hosts)"
+    if slots:
+        every = deciles([v for i in run["insts"] for vals in target_values(i).values() for v in vals])
+        calm = deciles([v for i in run["insts"] for vals in target_values(i, slots).values() for v in vals])
+        line += (f"; without them fleet p50 {every[4]:.0f} -> {calm[4]:.0f} µs, p90 {every[8]:.0f} -> {calm[8]:.0f} µs. "
+                 f"The ranking compares instances within each slot, so it is unaffected")
+    print(line)
 
 
 def per_target(run: dict) -> None:
@@ -533,17 +568,23 @@ def history_records(run: dict, meta: dict, run_id: str) -> list:
     label = lambda t: run["host_of"].get(t) or run["host_of"].get(t.partition(":")[0])
     # Hosts with many rotating IPs are sampled (seeded by the host name), so runs probe different IPs of them
     sampled = [{"host": h, "resolved": meta.get("resolved_counts", {}).get(h), "sampled": len(v), "seed": h} for h, v in meta.get("hosts", {}).items()]
+    bursts, judged = burst_slots(run)
     out = [{"record": "run", **base, "profile_config": meta.get("profile_config"), "cex_args": meta.get("cex_args"), "hosts": sampled,
-            "targets": [{"target": t, "endpoint": label(t), "role": run["roles"].get(t)} for t in targets]}]
+            "targets": [{"target": t, "endpoint": label(t), "role": run["roles"].get(t)} for t in targets],
+            "burst_share": len(bursts) / judged if judged else None, "burst_threshold_us": BURST_US}]
     for inst in run["insts"]:
         m, idx = inst["meta"], index.get(inst["id"])
         host = {"instance_id": inst["id"], "index": idx, "instance_type": m.get("instance_type"), "ami_id": m.get("ami_id"),
                 "kernel": m.get("kernel"), "partition": m.get("partition") or None,
                 "in_placement_group": meta.get("instances", {}).get(idx, {}).get("in_placement_group")}
+        calm = target_values(inst, bursts)
         for t, vals in sorted(target_values(inst).items(), key=lambda kv: target_key(kv[0])):
-            q = statistics.quantiles(vals, n=10, method="inclusive") if len(vals) > 1 else vals * 9
+            q = deciles(vals)
+            # Without exchange-side slow slots, so busy periods at the exchange don't read as worse hosts
+            c = deciles(calm[t]) if calm.get(t) else [None] * 9
             out.append({"record": "sample", **base, **host, "target": t, "endpoint": label(t), "role": run["roles"].get(t),
-                        "n": len(vals), "min_us": min(vals), "p10_us": q[0], "p50_us": q[4], "p90_us": q[8]})
+                        "n": len(vals), "min_us": min(vals), "p10_us": q[0], "p50_us": q[4], "p90_us": q[8],
+                        "n_calm": len(calm.get(t, [])), "p50_calm_us": c[4], "p90_calm_us": c[8]})
     return out
 
 
